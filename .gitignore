@@ -1,0 +1,12 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+data/
+build/
+dist/
+*.spec.bak
+*.swp
+*.swo
+.pytest_cache/
+.coverage

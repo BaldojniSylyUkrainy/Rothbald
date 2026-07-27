@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rothbald — розпізнавач балдьожний</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <section id="modelGate" class="model-gate" aria-live="polite">
+    <div class="model-gate-inner">
+      <div class="wordmark model-wordmark" aria-label="Rothbald">Rothbald</div>
+      <p class="model-kicker">Підготовка локального двигуна</p>
+      <h1 id="modelGateTitle">Перевіряю моделі</h1>
+      <p id="modelGateCopy">Це займає кілька секунд. Під час першого запуску застосунок завантажить потрібні файли.</p>
+      <div class="model-total">
+        <div class="model-total-head"><span id="modelPhase">Перевірка</span><strong id="modelTotalPercent">0%</strong></div>
+        <div id="modelTotalTrack" class="model-track" role="progressbar" aria-label="Загальний прогрес моделей" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="modelTotalFill"></div></div>
+      </div>
+      <div id="modelRows" class="model-rows"></div>
+      <button id="retryModels" class="model-retry hidden">Спробувати ще раз</button>
+      <p class="model-note">Моделі й твої відео залишаються на цьому комп’ютері.</p>
+    </div>
+  </section>
+  <main>
+    <header>
+      <div class="brand-block">
+        <div class="wordmark" aria-label="Rothbald">Rothbald</div>
+        <div class="brand-copy">
+          <p class="eyebrow">rothpithnavach baldojnyi</p>
+          <p class="subtitle">Локальний пошук реплік у монтажних матеріалах. Відео нікуди не відправляються.</p>
+        </div>
+      </div>
+      <button id="chooseFolder" class="primary-action"><span>Новий проєкт</span><span aria-hidden="true">↗</span></button>
+    </header>
+
+    <section id="projectHome" class="project-home">
+      <div class="home-head">
+        <div>
+          <p class="section-index">01 / ПРОЄКТИ</p>
+          <h1>Знайди потрібну<br>репліку.</h1>
+          <p>Rothbald локально розпізнає відео та відкриває потрібний момент на точному таймкоді.</p>
+        </div>
+        <div class="home-capabilities"><span>Точні слова</span><span>Пошук за змістом</span><span>Перехід на таймкод</span></div>
+      </div>
+      <div id="recentProjects" class="recent-projects"><p class="empty">Завантажую проєкти…</p></div>
+    </section>
+
+    <div id="projectWorkspace" class="hidden">
+      <details id="queueProgress" class="queue-progress hidden" open>
+      <summary><span class="section-index">02 / ОБРОБКА</span><strong id="queueSummary">Готую матеріали</strong><span class="queue-chevron" aria-hidden="true">⌄</span></summary>
+      <div class="queue-body">
+      <div class="queue-head">
+        <strong id="queueTitle">Обробка проєкту</strong>
+        <span id="queuePercent">0%</span>
+      </div>
+      <div id="queueTrack" class="queue-track" role="progressbar" aria-label="Прогрес розпізнавання" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="queueFill"></div></div>
+      <div class="queue-details">
+        <span id="queueProcessed"></span>
+        <span class="queue-detail-action"><span id="queueEta"></span><button id="locateFromQueue" class="queue-locate hidden">Locate</button></span>
+      </div>
+      <div class="queue-controls">
+        <button id="pauseQueue">⏸ Пауза</button>
+        <button id="abortQueue" class="danger">■ Зупинити</button>
+        <span id="queueControlHint"></span>
+      </div>
+      <div id="semanticProgress" class="semantic-progress hidden">
+        <div class="queue-head"><strong id="semanticTitle">Індексація змісту</strong><span id="semanticPercent">0%</span></div>
+        <div id="semanticTrack" class="queue-track semantic-track" role="progressbar" aria-label="Прогрес індексації змісту" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="semanticFill"></div></div>
+      </div>
+      </div>
+      </details>
+
+      <section class="search-zone">
+      <div class="search-zone-head"><div><p class="section-index">03 / ПОШУК</p><h2>Що потрібно знайти?</h2></div><p>Слово, фраза або просто сенс розмови</p></div>
+      <div class="search-card">
+        <label class="visually-hidden" for="searchInput">Фраза для пошуку в транскрипціях</label>
+        <input id="searchInput" type="search" placeholder="Наприклад: захист бізнесу від перевірок" autocomplete="off">
+        <button id="searchButton">Знайти <span aria-hidden="true">↗</span></button>
+      </div>
+      <div id="searchScope" class="search-scope">Пошук охопить усі розпізнані відео поточного проєкту</div>
+      </section>
+
+      <section class="workspace">
+      <aside>
+        <div class="section-title"><h2><small>04</small> Відео</h2><span id="videoCount">0</span></div>
+        <div id="projectActions" class="project-actions hidden">
+          <button id="closeProject">← До проєктів</button>
+          <button id="rescan">Оновити папку</button>
+          <button id="retranscribe" class="danger">Перерозпізнати все</button>
+          <button id="deleteProject" class="danger">Видалити проєкт</button>
+        </div>
+        <div id="videoList" class="video-list"><p class="empty">Поки порожньо</p></div>
+      </aside>
+
+      <div class="content">
+        <div id="playerCard" class="player-card empty-player">
+          <video id="player" controls preload="metadata"></video>
+          <button id="clearSelection" title="Зняти вибір відео">×</button>
+          <div id="playerCaption" class="player-caption" aria-live="polite">
+            <span class="player-caption-label">Зараз відтворюється</span>
+            <span class="player-caption-copy">
+              <strong id="playerTitle"></strong>
+              <span id="playerPath"></span>
+            </span>
+          </div>
+          <div id="playerPlaceholder">Обери відео або результат пошуку</div>
+        </div>
+        <div class="section-title results-title"><h2><small>05</small> Результати</h2><span id="resultCount"></span></div>
+        <div id="resultTabs" class="result-tabs hidden">
+          <button data-result-tab="semantic" class="active">За змістом <span id="semanticTabCount">0</span></button>
+          <button data-result-tab="exact">Точні <span id="exactTabCount">0</span></button>
+          <button data-result-tab="all">Усі <span id="allTabCount">0</span></button>
+        </div>
+        <div id="results" class="results" aria-live="polite"><p class="empty">Введи фразу, яку хочеш знайти.</p></div>
+      </div>
+      </section>
+    </div>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

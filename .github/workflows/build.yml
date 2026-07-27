@@ -1,0 +1,57 @@
+name: test-and-build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            artifact: Rothbald-Apple-Silicon
+          - os: windows-latest
+            artifact: Rothbald-Windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install ffmpeg on macOS
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: Install ffmpeg on Windows
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --no-progress -y
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt -r requirements-build.txt
+      - name: Verify source and tests
+        shell: bash
+        run: |
+          python -m py_compile server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py rothbald.py
+          node --check static/app.js
+          python -m unittest discover -s tests -v
+      - name: Build native bundle
+        run: pyinstaller --noconfirm Rothbald.spec
+      - name: Archive macOS app
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent dist/Rothbald.app Rothbald-Apple-Silicon.zip
+      - name: Archive Windows app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist\Rothbald -DestinationPath Rothbald-Windows-x64.zip
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
+          if-no-files-found: error
