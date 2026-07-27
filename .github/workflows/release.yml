@@ -4,12 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing green-main release tag, for example v0.1.2.0"
+        description: "Existing green-main release tag, for example v0.2.0.0"
         required: true
-        type: string
-      notes:
-        description: "Release notes stored in latest.json"
-        required: false
         type: string
 
 permissions:
@@ -21,10 +17,18 @@ concurrency:
 
 jobs:
   preflight:
-    name: Validate release tag
+    name: Validate release contract and credentials
     runs-on: ubuntu-latest
+    environment: release
     env:
       REQUESTED_TAG: ${{ inputs.tag }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+      APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+      ROTHBALD_UPDATER_PRIVATE_KEY: ${{ secrets.ROTHBALD_UPDATER_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -54,6 +58,13 @@ jobs:
             echo "Tag $REQUESTED_TAG points to $TAG_COMMIT, not dispatched main commit $GITHUB_SHA"
             exit 1
           }
+          for NAME in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_CONTENT APPLE_SIGNING_IDENTITY ROTHBALD_UPDATER_PRIVATE_KEY; do
+            [[ -n "${!NAME:-}" ]] || {
+              echo "$NAME is missing in the release environment"
+              exit 1
+            }
+          done
+          python scripts/validate_release_notes.py
 
   windows:
     name: Windows x64
@@ -88,7 +99,7 @@ jobs:
         shell: bash
         run: |
           python scripts/prepare_build.py
-          python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py
+          python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/validate_release_notes.py
           node --check static/app.js
           python -m unittest discover -s tests -v
       - name: Build Windows application
@@ -159,7 +170,7 @@ jobs:
       - name: Verify source and tests
         run: |
           python scripts/prepare_build.py
-          python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py
+          python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/validate_release_notes.py
           node --check static/app.js
           python -m unittest discover -s tests -v
       - name: Import Developer ID certificate
@@ -258,10 +269,14 @@ jobs:
     name: Assemble draft release
     needs: [windows, macos]
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
       - uses: actions/download-artifact@v7
         with:
           pattern: release-*
@@ -270,9 +285,10 @@ jobs:
       - name: Generate and verify release manifest
         env:
           REQUESTED_TAG: ${{ inputs.tag }}
-          RELEASE_NOTES: ${{ inputs.notes }}
           RELEASE_ASSETS_DIR: release-assets
+          ROTHBALD_UPDATER_PRIVATE_KEY: ${{ secrets.ROTHBALD_UPDATER_PRIVATE_KEY }}
         run: |
+          python -m pip install cryptography==49.0.0
           python scripts/generate_release_manifest.py
           test -s release-assets/latest.json
           test -s release-assets/SHA256SUMS.txt
@@ -284,7 +300,8 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
             [[ "$IS_DRAFT" == "true" ]] || { echo "Release $TAG is already published; refusing to overwrite it"; exit 1; }
+            gh release edit "$TAG" --notes-file RELEASE_NOTES.md --title "Rothbald ${TAG#v}"
           else
-            gh release create "$TAG" --verify-tag --draft --title "$TAG"
+            gh release create "$TAG" --verify-tag --draft --title "Rothbald ${TAG#v}" --notes-file RELEASE_NOTES.md
           fi
           gh release upload "$TAG" release-assets/* --clobber

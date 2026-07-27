@@ -132,8 +132,26 @@
   </main>
   <footer class="app-footer">
     <p>Якщо щось не працює, пишіть на <a href="mailto:baldojnisyly@gmail.com">baldojnisyly@gmail.com</a></p>
-    <p class="app-build"><span>Rothbald</span> <strong id="appVersion">версія…</strong></p>
+    <p class="app-build"><button id="checkUpdates" class="footer-update hidden">Перевірити оновлення</button><span>Rothbald</span> <strong id="appVersion">версія…</strong></p>
   </footer>
+  <div id="updateModal" class="update-modal hidden" role="dialog" aria-modal="true" aria-labelledby="updateTitle">
+    <div class="update-dialog">
+      <button id="closeUpdateModal" class="update-close" aria-label="Закрити">×</button>
+      <p class="section-index">ОНОВЛЕННЯ ROTHBALD</p>
+      <h2 id="updateTitle">Доступна нова версія</h2>
+      <p id="updateSummary" class="update-summary"></p>
+      <div id="updateNotes" class="update-notes"></div>
+      <div id="updateProgressBox" class="update-progress hidden">
+        <div><span id="updateProgressLabel">Завантаження</span><strong id="updatePercent">0%</strong></div>
+        <div class="update-track" role="progressbar" aria-label="Завантаження оновлення" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="updateFill"></div></div>
+      </div>
+      <p id="updateError" class="update-error hidden"></p>
+      <div class="update-actions">
+        <button id="laterUpdate">Пізніше</button>
+        <button id="installUpdate" class="primary-action">Завантажити оновлення</button>
+      </div>
+    </div>
+  </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/static/app.js"></script>
 </body>

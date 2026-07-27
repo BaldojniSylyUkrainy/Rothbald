@@ -33,6 +33,7 @@ from model_manager import (
     WHISPER_REPO,
     get_model_manager,
 )
+from updater import UpdateManager
 
 
 SOURCE_ROOT = Path(__file__).resolve().parent
@@ -79,6 +80,15 @@ interrupt_reasons: dict[str, str] = {}
 _embedder = None
 model_manager = get_model_manager(DATA_DIR)
 hardware_preflight = HardwarePreflight(DATA_DIR)
+_app_info = application_info()
+update_manager = UpdateManager(
+    DATA_DIR,
+    _app_info["version"],
+    enabled=(
+        getattr(sys, "frozen", False)
+        and _app_info["channel"] == "release"
+    ) or os.environ.get("ROTHBALD_ENABLE_UPDATER") == "1",
+)
 folder_picker_callback = None
 runtime_lock = threading.Lock()
 runtime_started = False
@@ -1524,6 +1534,8 @@ class Handler(BaseHTTPRequestHandler):
             return respond(self, hardware_preflight.inspect())
         if parsed.path == "/api/app":
             return respond(self, application_info())
+        if parsed.path == "/api/update":
+            return respond(self, update_manager.snapshot())
         if parsed.path == "/api/projects":
             return self.projects()
         if parsed.path == "/api/videos":
@@ -1562,6 +1574,19 @@ class Handler(BaseHTTPRequestHandler):
                 start_runtime()
                 model_manager.start(force=model_manager.snapshot()["status"] == "error")
                 return respond(self, model_manager.snapshot(), 202)
+            except ValueError as exc:
+                return respond(self, {"error": str(exc)}, 409)
+        if path == "/api/update/check":
+            return respond(self, update_manager.start_check(), 202)
+        if path == "/api/update/download":
+            try:
+                return respond(self, update_manager.start_download(), 202)
+            except ValueError as exc:
+                return respond(self, {"error": str(exc)}, 409)
+        if path == "/api/update/install":
+            try:
+                update_manager.install()
+                return respond(self, {"launched": True}, 202)
             except ValueError as exc:
                 return respond(self, {"error": str(exc)}, 409)
         if path == "/api/projects/choose":

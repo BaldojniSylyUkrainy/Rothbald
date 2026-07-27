@@ -3,6 +3,7 @@ const state = {
   searchResults: [], resultTab: 'semantic', selectedResult: null, visibleResults: 100,
   projectSequence: 0, videoSequence: 0, searchSequence: 0,
   searchControllers: [], searchLoading: { exact: false, semantic: false },
+  appInfo: null, appReady: false, updateStarted: false, updateManual: false, updateTimer: null,
 };
 
 const $ = selector => document.querySelector(selector);
@@ -77,10 +78,146 @@ async function api(url, options = {}) {
 async function loadAppInfo() {
   try {
     const info = await api('/api/app');
+    state.appInfo = info;
     $('#appVersion').textContent = `v${info.version}`;
     $('#appVersion').title = info.commit ? `Build ${info.commit.slice(0, 12)}` : '';
+    if (info.channel === 'release') $('#checkUpdates').classList.remove('hidden');
+    maybeStartUpdateCheck();
+    return info;
   } catch {
     $('#appVersion').textContent = 'версія недоступна';
+    return null;
+  }
+}
+
+function releaseNotesHtml(markdown) {
+  const output = [];
+  let list = null;
+  const closeList = () => {
+    if (list) output.push(`</${list}>`);
+    list = null;
+  };
+  String(markdown || '').split(/\r?\n/).forEach((raw, index) => {
+    const line = raw.trim();
+    if (!line) {
+      closeList();
+      return;
+    }
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      closeList();
+      if (index === 0 && heading[1].length === 1) return;
+      const level = Math.min(4, heading[1].length + 1);
+      output.push(`<h${level}>${esc(heading[2])}</h${level}>`);
+      return;
+    }
+    const bullet = line.match(/^[-*]\s+(.+)$/);
+    const numbered = line.match(/^\d+[.)]\s+(.+)$/);
+    if (bullet || numbered) {
+      const wanted = bullet ? 'ul' : 'ol';
+      if (list !== wanted) {
+        closeList();
+        list = wanted;
+        output.push(`<${list}>`);
+      }
+      output.push(`<li>${esc((bullet || numbered)[1])}</li>`);
+      return;
+    }
+    closeList();
+    output.push(`<p>${esc(line)}</p>`);
+  });
+  closeList();
+  return output.join('');
+}
+
+function showUpdateModal(status) {
+  const modal = $('#updateModal');
+  modal.classList.remove('hidden');
+  $('#updateTitle').textContent = status.version
+    ? `Rothbald ${status.version}`
+    : 'Оновлення Rothbald';
+  $('#updateSummary').textContent = status.status === 'downloaded'
+    ? status.platform === 'darwin-aarch64'
+      ? 'Оновлення перевірено. Відкрий DMG і заміни Rothbald у папці Applications.'
+      : 'Оновлення перевірено. Installer закриє Rothbald після запуску.'
+    : `Встановлена версія ${status.current_version}. Перед інсталяцією файл буде перевірено за підписом і SHA-256.`;
+  $('#updateNotes').innerHTML = releaseNotesHtml(status.notes);
+  const progressVisible = ['downloading', 'downloaded'].includes(status.status);
+  $('#updateProgressBox').classList.toggle('hidden', !progressVisible);
+  const percent = Math.max(0, Math.min(100, +status.percent || 0));
+  $('#updatePercent').textContent = `${Math.round(percent)}%`;
+  $('#updateFill').style.width = `${percent}%`;
+  $('.update-track').setAttribute('aria-valuenow', Math.round(percent));
+  $('#updateProgressLabel').textContent = status.status === 'downloaded'
+    ? 'Installer перевірено'
+    : `${modelBytes(status.downloaded)} / ${modelBytes(status.total)}`;
+  $('#updateError').classList.toggle('hidden', !status.error);
+  $('#updateError').textContent = status.error || '';
+  const install = $('#installUpdate');
+  install.disabled = status.status === 'downloading';
+  install.dataset.updateStatus = status.status;
+  install.dataset.updatePlatform = status.platform;
+  install.textContent = status.status === 'downloaded'
+    ? status.platform === 'darwin-aarch64' ? 'Відкрити DMG' : 'Запустити installer'
+    : status.status === 'downloading' ? 'Завантажую…'
+      : status.status === 'error' ? 'Спробувати ще раз' : 'Завантажити оновлення';
+}
+
+async function pollUpdate() {
+  clearTimeout(state.updateTimer);
+  try {
+    const status = await api('/api/update');
+    if (!status.enabled) return;
+    if (['available', 'downloading', 'downloaded'].includes(status.status)) showUpdateModal(status);
+    if (status.status === 'error' && state.updateManual) showUpdateModal(status);
+    if (status.status === 'up_to_date' && state.updateManual) {
+      toast(`Установлена актуальна версія Rothbald ${status.current_version}.`);
+      state.updateManual = false;
+    }
+    if (['checking', 'downloading'].includes(status.status)) {
+      state.updateTimer = setTimeout(pollUpdate, status.status === 'downloading' ? 500 : 800);
+    }
+  } catch (error) {
+    if (state.updateManual) toast(error.message);
+  }
+}
+
+async function checkForUpdates(manual = false) {
+  state.updateManual = manual;
+  try {
+    await api('/api/update/check', { method: 'POST' });
+    pollUpdate();
+  } catch (error) {
+    if (manual) toast(error.message);
+  }
+}
+
+function maybeStartUpdateCheck() {
+  if (state.updateStarted || !state.appReady || state.appInfo?.channel !== 'release') return;
+  state.updateStarted = true;
+  checkForUpdates(false);
+}
+
+async function updatePrimaryAction() {
+  const status = $('#installUpdate').dataset.updateStatus;
+  try {
+    if (status === 'downloaded') {
+      await api('/api/update/install', { method: 'POST' });
+      if ($('#installUpdate').dataset.updatePlatform === 'darwin-aarch64') {
+        toast('DMG відкрито. Перетягни Rothbald у Applications і заміни попередню версію.');
+        $('#updateModal').classList.add('hidden');
+      }
+      return;
+    }
+    if (status === 'error') {
+      await checkForUpdates(true);
+      return;
+    }
+    await api('/api/update/download', { method: 'POST' });
+    pollUpdate();
+  } catch (error) {
+    $('#updateError').textContent = error.message;
+    $('#updateError').classList.remove('hidden');
   }
 }
 
@@ -211,6 +348,8 @@ async function bootstrapModels(retry = false) {
     if (status.status === 'ready') {
       gate.classList.add('ready');
       await loadProjects();
+      state.appReady = true;
+      maybeStartUpdateCheck();
       return;
     }
     if (status.status === 'error') return;
@@ -783,5 +922,9 @@ searchInput.addEventListener('keydown', event => { if (event.key === 'Enter') se
 $('#retryModels').addEventListener('click', () => bootstrapModels(true));
 $('#confirmHardware').addEventListener('click', confirmHardware);
 $('#recheckHardware').addEventListener('click', () => bootstrapModels());
+$('#checkUpdates').addEventListener('click', () => checkForUpdates(true));
+$('#closeUpdateModal').addEventListener('click', () => $('#updateModal').classList.add('hidden'));
+$('#laterUpdate').addEventListener('click', () => $('#updateModal').classList.add('hidden'));
+$('#installUpdate').addEventListener('click', updatePrimaryAction);
 loadAppInfo();
 bootstrapModels();

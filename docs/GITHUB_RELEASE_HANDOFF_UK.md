@@ -6,7 +6,8 @@ Workflow:
 
 - перевіряє і збирає звичайний Windows x64 `setup.exe` через Inno Setup;
 - перевіряє, підписує Developer ID, нотаризує й stapling-перевіряє macOS Apple Silicon;
-- формує `latest.json` і `SHA256SUMS.txt`;
+- формує підписаний `latest.json` і `SHA256SUMS.txt`;
+- бере один текст із обов’язкового `RELEASE_NOTES.md` для manifest та GitHub Release;
 - створює **draft** GitHub Release та ніколи не публікує його автоматично.
 
 Версія оголошена у `VERSION`. Перед складанням `scripts/prepare_build.py` вбудовує
@@ -80,30 +81,42 @@ GitHub не дозволяє прочитати назад значення secr
 | Secret | `APPLE_API_ISSUER` | App Store Connect Issuer ID |
 | Secret | `APPLE_API_KEY` | App Store Connect Key ID |
 | Secret | `APPLE_API_KEY_CONTENT` | повний `AuthKey_….p8` |
+| Secret | `ROTHBALD_UPDATER_PRIVATE_KEY` | base64 Ed25519 private key із `.secrets/rothbald-updater-private.key` |
 | Variable | `APPLE_SIGNING_IDENTITY` | `Developer ID Application: Volodymyr Bortiuk (3KFYRV3QRP)` |
 
 Apple secrets можна зберегти на repository або environment рівні. Не дублюйте
 однакову назву на обох рівнях. Variable рекомендовано зберігати в environment.
 
-Rothbald не використовує `TAURI_SIGNING_PRIVATE_KEY`: Tauri `.sig` підписує
-тільки Tauri updater payload, а Rothbald є PyInstaller/PySide6 застосунком.
-Механічне використання цього ключа не дало б жодної перевірки під час запуску.
-Поточний `latest.json` є лише download/checksum manifest: застосунок його не
-читає, тому updater public/private key для цього релізу не генерується.
+Rothbald не використовує `TAURI_SIGNING_PRIVATE_KEY`: це PyInstaller/PySide6
+застосунок із власним Ed25519 manifest. Public key вбудований у
+`update_manifest.py`; відповідний private key існує лише в ignored локальному
+файлі, encrypted backup і secret середовища `release`.
+
+Додайте вже згенерований ключ без виведення його в Terminal:
+
+```bash
+gh secret set ROTHBALD_UPDATER_PRIVATE_KEY --env release \
+  --repo BaldojniSylyUkrainy/Rothbald \
+  < .secrets/rothbald-updater-private.key
+```
+
+Не генеруйте новий ключ, якщо цей файл втрачено без підтвердженої резервної
+копії: новий private key не відповідатиме public key у вже встановлених збірках.
 
 ## 5. Запуск релізу
 
-1. Змініть `VERSION` у reviewed commit і дочекайтесь зеленого `test-and-build` на `main`.
-2. Створіть annotated tag `v` + значення `VERSION`, наприклад `v0.1.2.0`, саме на зеленому `main`, і запуште його.
-3. Tag push навмисно не запускає повторний `test-and-build`.
-4. Відкрийте **Actions → Manual signed release → Run workflow**.
-5. Branch: лише `main`.
-6. `tag`: уже наявний тег із попереднього кроку.
-7. `notes`: короткий текст змін.
-8. Якщо для environment налаштовані required reviewers, approve macOS і Windows jobs.
+1. Змініть `VERSION` і `RELEASE_NOTES.md` в одному reviewed commit. Перший рядок notes має бути `# Rothbald <VERSION>`; потрібні реальний заголовок секції та список без TODO/TBD/заглушок.
+2. Дочекайтесь зеленого `test-and-build` на `main`: звичайний CI також перевіряє notes.
+3. Створіть annotated tag `v` + значення `VERSION`, наприклад `v0.2.0.0`, саме на зеленому `main`, і запуште його.
+4. Tag push навмисно не запускає повторний `test-and-build`.
+5. Відкрийте **Actions → Manual signed release → Run workflow**.
+6. Branch: лише `main`.
+7. `tag`: уже наявний тег із попереднього кроку. Окремого поля notes немає.
+8. Якщо для environment налаштовані required reviewers, approve jobs.
 
 Workflow fail-closed зупиниться, якщо запуск зроблено не з поточного `main`, тег
-не існує, не вказує на цей commit або не збігається з `VERSION`, бракує credential,
+не існує, не вказує на цей commit або не збігається з `VERSION`, notes порожні,
+неактуальні, надто короткі чи містять заглушку, бракує credential,
 Developer ID signature/hardened runtime/timestamp, Apple notarization не має
 статусу `Accepted`, stapling невалідний або бракує будь-якого release asset.
 
@@ -120,8 +133,7 @@ Developer ID signature/hardened runtime/timestamp, Apple notarization не ма�
 
 ## Windows SmartScreen
 
-Як і в `yt-dlp-BD`, Tauri updater signature не є Windows Authenticode. У
-Rothbald Tauri updater відсутній, тому Windows installer має SHA-256 integrity у
-release manifest, але без окремого Authenticode certificate Windows може
-показувати `Unknown publisher`. Прибрати це можна лише окремим Windows
-code-signing certificate.
+Ed25519 signature updater manifest не є Windows Authenticode. Rothbald перевіряє
+підпис manifest, точний розмір і SHA-256 installer-а, але без окремого
+Authenticode certificate Windows може показувати `Unknown publisher`. Прибрати
+це можна лише окремим Windows code-signing certificate.

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import sqlite3
@@ -14,9 +16,14 @@ import hardware_check
 import rothbald
 import server
 import transcribe_video
+import update_manifest
 from hardware_check import HardwarePreflight
 from model_manager import ModelManager
+from release_notes import validate_release_notes
 from scripts import generate_release_manifest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from updater import UpdateManager
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +38,42 @@ def locked_versions(path: Path) -> dict[str, str]:
         name, version = line.split("==", 1)
         result[name.lower().replace("_", "-")] = version
     return result
+
+
+def updater_key_pair() -> tuple[str, str]:
+    private_key = Ed25519PrivateKey.generate()
+    private_raw = private_key.private_bytes(
+        serialization.Encoding.Raw,
+        serialization.PrivateFormat.Raw,
+        serialization.NoEncryption(),
+    )
+    public_raw = private_key.public_key().public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    )
+    return (
+        base64.b64encode(private_raw).decode("ascii"),
+        base64.b64encode(public_raw).decode("ascii"),
+    )
+
+
+class FakeResponse:
+    def __init__(self, payload: bytes):
+        self.payload = payload
+        self.offset = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            size = len(self.payload) - self.offset
+        chunk = self.payload[self.offset:self.offset + size]
+        self.offset += len(chunk)
+        return chunk
 
 
 class ApplicationInfoTests(unittest.TestCase):
@@ -425,9 +468,92 @@ class ModelBootstrapTests(unittest.TestCase):
             self.assertEqual(manager.snapshot()["models"][0]["percent"], 50)
 
 
+class UpdaterTests(unittest.TestCase):
+    def signed_manifest(self, private_key: str, version: str, payload: bytes) -> dict:
+        filename = f"Rothbald-{version}-Mac-Apple-Silicon.dmg"
+        return update_manifest.sign_manifest(
+            {
+                "schema": 1,
+                "version": version,
+                "notes": f"# Rothbald {version}\n\n## Нове\n\n- Безпечне оновлення.\n",
+                "pub_date": "2026-07-27T00:00:00Z",
+                "platforms": {
+                    "darwin-aarch64": {
+                        "url": (
+                            "https://github.com/BaldojniSylyUkrainy/Rothbald/"
+                            f"releases/download/v{version}/{filename}"
+                        ),
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                        "size": len(payload),
+                    }
+                },
+            },
+            private_key,
+        )
+
+    def test_signed_update_is_downloaded_verified_and_opened(self) -> None:
+        private_key, public_key = updater_key_pair()
+        installer_payload = b"signed installer payload"
+        manifest = self.signed_manifest(private_key, "0.2.0.0", installer_payload)
+        manifest_payload = json.dumps(manifest).encode("utf-8")
+
+        def opener(request, timeout):
+            self.assertGreater(timeout, 0)
+            return FakeResponse(
+                manifest_payload if request.full_url.endswith("latest.json") else installer_payload
+            )
+
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(update_manifest, "PUBLIC_KEY_BASE64", public_key):
+            manager = UpdateManager(
+                Path(temporary),
+                "0.1.2.0",
+                enabled=True,
+                platform_name="darwin",
+                urlopen=opener,
+            )
+            manager._check()
+            self.assertEqual(manager.snapshot()["status"], "available")
+            manager._download()
+            self.assertEqual(manager.snapshot()["status"], "downloaded")
+            opened = []
+            manager.set_installer_callback(lambda path: opened.append(path) or True)
+            manager.install()
+            self.assertEqual(len(opened), 1)
+            self.assertEqual(opened[0].read_bytes(), installer_payload)
+
+    def test_tampered_manifest_is_rejected(self) -> None:
+        private_key, public_key = updater_key_pair()
+        manifest = self.signed_manifest(private_key, "0.2.0.0", b"installer")
+        manifest["notes"] = "Змінений після підписання текст"
+        with mock.patch.object(update_manifest, "PUBLIC_KEY_BASE64", public_key):
+            with self.assertRaisesRegex(ValueError, "signature is invalid"):
+                update_manifest.verify_manifest(manifest)
+
+    def test_release_notes_reject_wrong_version_and_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "RELEASE_NOTES.md"
+            path.write_text("", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "must not be empty"):
+                validate_release_notes(path, "1.2.3.4")
+            path.write_text(
+                "# Rothbald 9.9.9.9\n\n## Зміни\n\n- Достатньо довгий справжній опис релізу для перевірки контракту.\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "must start"):
+                validate_release_notes(path, "1.2.3.4")
+            path.write_text(
+                "# Rothbald 1.2.3.4\n\n## Зміни\n\n- TODO: достатньо довгий текст, який однаково має бути відхилено як заглушку.\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "placeholder"):
+                validate_release_notes(path, "1.2.3.4")
+
+
 class ReleaseContractTests(unittest.TestCase):
     def test_release_manifest_uses_user_facing_installer_names(self) -> None:
         version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        private_key, public_key = updater_key_pair()
         with tempfile.TemporaryDirectory() as temporary:
             assets = Path(temporary)
             macos_name = f"Rothbald-{version}-Mac-Apple-Silicon.dmg"
@@ -435,21 +561,44 @@ class ReleaseContractTests(unittest.TestCase):
             (assets / macos_name).write_bytes(b"macos")
             (assets / windows_name).write_bytes(b"windows")
             with mock.patch.object(generate_release_manifest, "ASSETS", assets), \
-                 mock.patch.object(generate_release_manifest, "REPOSITORY", "example/Rothbald"), \
                  mock.patch.dict(
                      os.environ,
-                     {"REQUESTED_TAG": f"v{version}", "RELEASE_NOTES": "Тестовий реліз"},
-                 ):
+                     {
+                         "REQUESTED_TAG": f"v{version}",
+                         "ROTHBALD_UPDATER_PRIVATE_KEY": private_key,
+                     },
+                 ), \
+                 mock.patch.object(update_manifest, "PUBLIC_KEY_BASE64", public_key):
                 generate_release_manifest.main()
 
             manifest = json.loads((assets / "latest.json").read_text(encoding="utf-8"))
+            with mock.patch.object(update_manifest, "PUBLIC_KEY_BASE64", public_key):
+                update_manifest.verify_manifest(manifest)
             self.assertEqual(manifest["platforms"]["darwin-aarch64"]["url"],
-                             f"https://github.com/example/Rothbald/releases/download/v{version}/{macos_name}")
+                             f"https://github.com/BaldojniSylyUkrainy/Rothbald/releases/download/v{version}/{macos_name}")
             self.assertEqual(manifest["platforms"]["windows-x86_64"]["url"],
-                             f"https://github.com/example/Rothbald/releases/download/v{version}/{windows_name}")
+                             f"https://github.com/BaldojniSylyUkrainy/Rothbald/releases/download/v{version}/{windows_name}")
             checksums = (assets / "SHA256SUMS.txt").read_text(encoding="utf-8")
             self.assertIn(f"  {macos_name}\n", checksums)
             self.assertIn(f"  {windows_name}\n", checksums)
+
+    def test_release_manifest_rejects_a_private_key_that_does_not_match_the_app(self) -> None:
+        version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        private_key, _ = updater_key_pair()
+        with tempfile.TemporaryDirectory() as temporary:
+            assets = Path(temporary)
+            (assets / f"Rothbald-{version}-Mac-Apple-Silicon.dmg").write_bytes(b"macos")
+            (assets / f"Rothbald-{version}-Windows-Setup.exe").write_bytes(b"windows")
+            with mock.patch.object(generate_release_manifest, "ASSETS", assets), \
+                 mock.patch.dict(
+                     os.environ,
+                     {
+                         "REQUESTED_TAG": f"v{version}",
+                         "ROTHBALD_UPDATER_PRIVATE_KEY": private_key,
+                     },
+                 ):
+                with self.assertRaisesRegex(SystemExit, "signature is invalid"):
+                    generate_release_manifest.main()
 
     def test_platform_locks_include_direct_and_platform_dependencies(self) -> None:
         direct = {}

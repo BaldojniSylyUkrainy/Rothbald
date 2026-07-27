@@ -50,8 +50,9 @@ jobs:
         shell: bash
         run: |
           python scripts/prepare_build.py
-          python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py
+          python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/validate_release_notes.py
           node --check static/app.js
+          python scripts/validate_release_notes.py
           python -m unittest discover -s tests -v
       - name: Build native bundle
         run: pyinstaller --noconfirm Rothbald.spec

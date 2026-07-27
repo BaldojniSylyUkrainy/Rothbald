@@ -45,7 +45,10 @@ Selecting a video only controls the player. It must never narrow the search scop
 - `static/style.css` — responsive dark interface.
 - `requirements.txt` / `requirements-build.txt` — direct runtime and build inputs. `requirements-macos.lock`, `requirements-windows.lock`, and the matching `requirements-build-*.lock` files are the reproducible Python 3.12 environments used by setup and CI.
 - `VERSION` — the single four-component public application version.
+- `RELEASE_NOTES.md` / `release_notes.py` — the single version-bound release text and its fail-closed validation contract. The same Markdown is used by GitHub Release and the in-app updater.
 - `app_info.py` and `scripts/prepare_build.py` — runtime build metadata and deterministic platform version resources.
+- `update_manifest.py` / `updater.py` — Ed25519 manifest verification, platform asset selection, streaming download, SHA-256 verification, and native installer handoff.
+- `scripts/generate_updater_key.py` / `scripts/generate_release_manifest.py` — one-time updater key generation and signed release-manifest assembly.
 - `.github/workflows/release.yml` — manual gated signed/notarized draft-release pipeline.
 - `tests/test_server.py` — standard-library regression tests for migrations, queue claiming, matching, ranges, and chunk checkpoints.
 - `README.md` — user-facing installation and usage; `docs/DEVELOPMENT_UK.md` keeps source-only setup separate.
@@ -93,6 +96,17 @@ Important resource decision: semantic embeddings must run on CPU. Do not move th
 - Every launch verifies local snapshots and checks the current Hugging Face revision when online. A changed revision downloads through the same progress UI and updates `model-manifest.json` only after both model snapshots verify.
 - First launch requires the network. Later launches may proceed offline when both local snapshots are intact.
 - Queue work blocks on the model manager, while project and static endpoints stay available.
+
+### Application updates
+
+- Automatic binary updates are enabled only in frozen builds whose embedded channel is `release`. Source and normal CI builds stay disabled; `ROTHBALD_ENABLE_UPDATER=1` exists only for controlled development tests.
+- After the hardware/model startup gate is ready, the UI checks `https://github.com/BaldojniSylyUkrainy/Rothbald/releases/latest/download/latest.json` in a background thread. Manual checking remains available from the footer.
+- `latest.json` is signed with Ed25519. `update_manifest.py` contains only the public key and accepts only schema 1, four-part versions, the exact Rothbald GitHub release path, exact supported platform filenames, positive sizes, and lowercase SHA-256 values.
+- The matching private key must exist only as the protected `release` environment secret `ROTHBALD_UPDATER_PRIVATE_KEY` and in an encrypted owner backup. Never commit it or place it in a build artifact. Losing it after the first updater-enabled release prevents existing installations from trusting future manifests; rotating it requires a transition release signed by the existing key.
+- The updater streams the selected installer into the platform application-data `updates/` directory, rejects files larger or smaller than the signed size, verifies SHA-256 before the atomic rename, and verifies size/SHA-256 again immediately before native launch.
+- On Windows, Rothbald starts the verified Inno Setup executable and then closes so installation can replace files. On macOS, it opens the verified notarized DMG and leaves replacement in `Applications` to the user.
+- `RELEASE_NOTES.md` must begin with `# Rothbald <VERSION>`, contain a real section and bullet list, be substantive, and contain no placeholder markers. `scripts/validate_release_notes.py` is required in normal CI and release preflight. The release manifest embeds this exact text and GitHub Release uses the same file through `--notes-file`.
+- The updater modal renders a deliberately restricted Markdown subset: headings, paragraphs, unordered lists, and ordered lists. All text is escaped before HTML insertion.
 
 ### Atomic transcript replacement
 
@@ -195,6 +209,10 @@ Queue items are three-tuples `(action, video_id, queue_generation)`. Never enque
 - `GET /api/hardware`
 - `POST /api/hardware/confirm`
 - `POST /api/bootstrap/start`
+- `GET /api/update`
+- `POST /api/update/check`
+- `POST /api/update/download`
+- `POST /api/update/install`
 - `POST /api/projects/choose`
 - `POST /api/projects/{id}/open`
 - `POST /api/projects/{id}/locate`
@@ -228,7 +246,7 @@ The desktop launcher binds the local HTTP socket synchronously before it creates
 - `setup.command` performs Apple-Silicon, Python ≥3.11, ffmpeg/ffprobe, and 8-GB-free-space checks and installs `requirements-macos.lock`; `setup.ps1` installs `requirements-windows.lock`. Model verification/download now belongs to the in-app model gate.
 - `setup.ps1` performs the corresponding Windows dependency checks and installs the platform-marked requirements.
 - `.github/workflows/build.yml` tests and packages on native `macos-15` ARM64 and `windows-latest` runners for `main`, pull requests, and explicit manual dispatches. Pushing a release tag must not start a duplicate native build; the manually dispatched release workflow is the only post-tag build. Pull requests verify full packaging without uploading the large bundles; main/manual CI artifacts are retained for one day.
-- `.github/workflows/release.yml` is manual-only and uses the `release` environment. Its preflight accepts only an existing four-part tag that equals `VERSION`, points at the dispatched current `main` commit, and was created after green main CI. It installs platform-specific runtime/build locks, signs/notarizes/staples the Apple Silicon DMG, restores the runner's original Keychain search list, verifies the Windows bundle, generates checksums plus `latest.json`, and creates a draft release that must be published manually. Environment reviewers and branch policy are optional defense-in-depth when the repository's GitHub plan supports them.
+- `.github/workflows/release.yml` is manual-only and uses the `release` environment. Its free Ubuntu preflight accepts only an existing four-part tag that equals `VERSION`, points at the dispatched current `main` commit, validates `RELEASE_NOTES.md`, and requires every Apple/updater credential before native jobs start. It installs platform-specific runtime/build locks, signs/notarizes/staples the Apple Silicon DMG, restores the runner's original Keychain search list, verifies the Windows bundle, generates checksums plus a signed `latest.json`, and creates a draft release whose body is the same `RELEASE_NOTES.md`. The draft must be published manually before `/releases/latest` exposes it to installed applications.
 - Build version metadata is generated from `VERSION` before PyInstaller. The packaged UI reads `/api/app`; never hardcode a displayed version in HTML or JavaScript.
 
 ## Verification checklist
@@ -236,8 +254,9 @@ The desktop launcher binds the local HTTP socket synchronously before it creates
 Run after changes:
 
 ```bash
-.venv/bin/python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py
+.venv/bin/python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/validate_release_notes.py
 node --check static/app.js
+.venv/bin/python scripts/validate_release_notes.py
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
@@ -268,15 +287,18 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 - Native CI bundles are prepared through PyInstaller and GitHub Actions; the manual release path additionally signs and notarizes Apple Silicon.
 - The bundle opens as a standalone PySide6/QtWebEngine desktop window, not as a browser tab. PyInstaller embeds the platform-specific Dock/executable icon.
 - Model updates are checked in-app against published Hugging Face revisions and downloaded with exact byte progress, speed, and ETA.
-- Draft GitHub Release hosting, embedded build identity, macOS Developer ID signing/notarization, and cross-platform SHA-256 manifests are implemented. Automatic binary updates and Windows Authenticode still require a separate product decision/certificate.
+- Draft GitHub Release hosting, embedded build identity, macOS Developer ID signing/notarization, signed application-update manifests, verified in-app downloads, and native installer handoff are implemented. Windows Authenticode still requires a separate certificate.
 
 ## Changelog
 
 ### 2026-07-27
 
+- Bumped the feature release to `0.2.0.0` and added a signed cross-platform updater. Release builds check the latest published GitHub Release, verify an Ed25519 manifest, stream and SHA-256-check the exact platform installer, render escaped release notes, and hand the verified installer to the native OS flow.
+- Made `RELEASE_NOTES.md` a mandatory version-bound release artifact. CI/release preflight rejects missing, stale, short, or placeholder notes; the same Markdown becomes both the GitHub Release body and updater modal content.
+- Added the one-time updater key generator, embedded only its public key, required the protected `ROTHBALD_UPDATER_PRIVATE_KEY` release-environment secret, and made manifest assembly verify the resulting signature before upload.
+- Reworked the public README around capabilities, usage, Apple Silicon/Windows installation, updater behavior, and a prominent latest-release link.
 - Prepared `0.1.2.0` as the public-release candidate and removed the duplicate `test-and-build` tag trigger. A release now costs one normal `main` CI matrix plus the intentionally dispatched signed release matrix, never an automatic third matrix on tag push. Large CI bundles are not uploaded for pull requests and are retained for only one day on main/manual runs.
 - Replaced architecture-oriented release filenames with user-facing names: `Rothbald-<version>-Mac-Apple-Silicon.dmg`, the matching macOS ZIP, and `Rothbald-<version>-Windows-Setup.exe`. The manifest and checksum generator treats these names as the release contract.
-- Confirmed that Rothbald has no binary auto-updater. `latest.json` is currently a download/checksum manifest only; no updater private key is required or accepted, and no secret/public key is embedded in the application.
 - Released the `0.1.1.0` readiness hardening: rescan now distinguishes content changes from mtime-only changes and preserves the last searchable transcript/semantic revision until replacement succeeds.
 - Made the desktop launcher own its listening socket before opening QtWebEngine, fail clearly on a second instance/occupied port, daemonize request handlers, and close the server cleanly with the window.
 - Added separate reproducible Python 3.12 runtime and PyInstaller build locks for Apple Silicon and Windows x64. CI and release builds now install only the matching lock pair; dependency audit reported no known vulnerabilities.
@@ -289,7 +311,7 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 - Added a quiet application footer with `baldojnisyly@gmail.com` support contact and the version embedded by the current build. The UI fetches `/api/app`; it contains no hardcoded version string.
 - Added the single four-part `VERSION`, generated build metadata, macOS `Info.plist` versioning, Windows executable version resources, and regression coverage for embedded metadata precedence.
 - Added a manual-only protected release workflow modeled on `yt-dlp BD`: Windows x64 verification, Apple Silicon Developer ID signing, hardened runtime, notarization, stapling, Gatekeeper validation, checksums, `latest.json`, and draft GitHub Release assembly.
-- Added owner handoff and Apple credential documentation. Tauri updater keys are intentionally not reused because Rothbald is a PyInstaller application and cannot verify Tauri updater signatures.
+- Added owner handoff and Apple credential documentation. Tauri updater keys are intentionally not reused; Rothbald uses its own Ed25519 manifest contract because it is a PyInstaller application.
 
 - Replaced the development-oriented pywebview shell with PySide6 and QtWebEngine. The existing HTML/CSS interface remains unchanged inside a real cross-platform desktop window, while the native folder picker is safely bridged from backend request threads to the Qt main thread.
 - Changed the release contract to an installable product: Apple Silicon ships through the signed/notarized DMG and Windows x64 through an Inno Setup executable. Both package the Python runtime, Qt, backend dependencies, ffmpeg, and ffprobe; end users do not install developer tools or open a browser.

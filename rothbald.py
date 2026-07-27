@@ -47,7 +47,7 @@ def main() -> None:
     )
     server_thread.start()
 
-    from PySide6.QtCore import QObject, QUrl, Signal, Slot
+    from PySide6.QtCore import QObject, QProcess, QTimer, QUrl, Signal, Slot
     from PySide6.QtGui import QDesktopServices, QIcon
     from PySide6.QtWebEngineCore import QWebEnginePage
     from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -78,6 +78,39 @@ def main() -> None:
             with self._lock:
                 event, result = self._pending.pop(token)
             result["path"] = selection
+            event.set()
+
+    class UpdateInstaller(QObject):
+        requested = Signal(str, str)
+
+        def __init__(self):
+            super().__init__()
+            self._pending: dict[str, tuple[threading.Event, dict]] = {}
+            self._lock = threading.Lock()
+            self.requested.connect(self._open)
+
+        def install(self, path: Path) -> bool:
+            token = uuid.uuid4().hex
+            event, result = threading.Event(), {}
+            with self._lock:
+                self._pending[token] = (event, result)
+            self.requested.emit(token, str(path))
+            event.wait()
+            return bool(result.get("launched"))
+
+        @Slot(str, str)
+        def _open(self, token: str, raw_path: str) -> None:
+            path = Path(raw_path)
+            if sys.platform == "win32":
+                started = QProcess.startDetached(str(path), [], str(path.parent))
+                launched = bool(started[0] if isinstance(started, tuple) else started)
+                if launched:
+                    QTimer.singleShot(750, qt_app.quit)
+            else:
+                launched = QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+            with self._lock:
+                event, result = self._pending.pop(token)
+            result["launched"] = launched
             event.set()
 
     class RothbaldPage(QWebEnginePage):
@@ -111,7 +144,9 @@ def main() -> None:
     if icon_path.is_file():
         qt_app.setWindowIcon(QIcon(str(icon_path)))
     picker = FolderPicker()
+    update_installer = UpdateInstaller()
     server.set_folder_picker(picker.choose)
+    server.update_manager.set_installer_callback(update_installer.install)
     window = RothbaldWindow()
     window.show()
     try:

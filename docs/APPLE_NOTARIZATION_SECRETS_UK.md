@@ -89,12 +89,25 @@ list і видаляє все через cleanup step навіть після з
 
 ## Binary updater
 
-Rothbald `0.1.2.0` не має binary auto-updater. `latest.json` містить URL та
-SHA-256 готових installer-ів, але застосунок його не завантажує і не перевіряє.
-Тому для цього релізу не створюйте `TAURI_SIGNING_PRIVATE_KEY` чи будь-який
-інший updater secret.
+Rothbald `0.2.0.0` має власний Ed25519 updater для PyInstaller-збірок. Він не
+використовує `TAURI_SIGNING_PRIVATE_KEY`. Public key уже вбудований у застосунок,
+а відповідний private key створено локально в ignored-файлі:
 
-Якщо updater буде окремо реалізовано пізніше, private signing key має жити лише
-у GitHub environment secret і зашифрованому backup. У застосунок можна вбудувати
-тільки відповідний public key. Втрата private key після першого updater-enabled
-релізу позбавить уже встановлені копії можливості перевіряти майбутні оновлення.
+`./.secrets/rothbald-updater-private.key`
+
+Збережіть цей файл у зашифрованому password manager/backup і додайте його як
+environment secret без виведення значення:
+
+```bash
+gh secret set ROTHBALD_UPDATER_PRIVATE_KEY --env release \
+  --repo BaldojniSylyUkrainy/Rothbald \
+  < .secrets/rothbald-updater-private.key
+```
+
+Workflow підписує `latest.json`, а застосунок перевіряє підпис, точний asset URL,
+ім’я, розмір і SHA-256 до відкриття installer-а. Private key ніколи не
+потрапляє у застосунок, repository, release asset або Actions artifact.
+
+Не видаляйте єдину резервну копію й не запускайте генератор повторно для заміни
+ключа. Втрата private key після першого updater-enabled релізу позбавить уже
+встановлені копії можливості перевіряти майбутні оновлення.

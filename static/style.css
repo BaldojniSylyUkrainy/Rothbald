@@ -326,9 +326,52 @@ aside { min-width: 0; border-right: 1px solid var(--line); padding-right: 28px; 
 .app-footer p { margin: 0; }
 .app-footer a { color: var(--text); text-decoration-color: #66666d; text-underline-offset: 3px; }
 .app-footer a:hover { color: var(--signal); text-decoration-color: currentColor; }
-.app-build { display: flex; gap: 7px; white-space: nowrap; }
+.app-build { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
 .app-build span { color: var(--text); }
 .app-build strong { color: var(--signal); font-variant-numeric: tabular-nums; }
+.footer-update {
+  margin-right: 8px; padding: 3px 8px; border-color: #55555b; border-radius: 999px;
+  background: transparent; color: var(--muted); font-size: 10px; font-weight: 700;
+}
+.footer-update:hover { background: var(--paper); color: var(--text); }
+.update-modal {
+  position: fixed; z-index: 200; inset: 0; display: grid; place-items: center;
+  overflow: auto; padding: 24px; background: #050506d9; backdrop-filter: blur(10px);
+}
+.update-dialog {
+  position: relative; width: min(680px, 100%); max-height: min(760px, calc(100vh - 48px));
+  overflow: auto; padding: 30px; border: 1px solid #4c4c52; border-radius: 18px;
+  background: var(--panel); box-shadow: 0 28px 90px #000c;
+}
+.update-close {
+  position: absolute; top: 16px; right: 16px; width: 34px; height: 34px;
+  padding: 0; border-radius: 50%; background: transparent; font-size: 21px;
+}
+.update-dialog h2 {
+  margin: 10px 45px 8px 0; font-size: clamp(30px, 5vw, 48px); line-height: 1;
+  letter-spacing: -.05em;
+}
+.update-summary { margin: 0 0 24px; color: var(--muted); }
+.update-notes {
+  padding: 20px 22px; border: 1px solid var(--line); border-radius: 12px;
+  background: #0d0d0f; color: #d8d8dc;
+}
+.update-notes h2, .update-notes h3, .update-notes h4 { margin: 20px 0 8px; letter-spacing: -.025em; }
+.update-notes h2:first-child, .update-notes h3:first-child { margin-top: 0; }
+.update-notes h2 { font-size: 21px; }
+.update-notes h3 { font-size: 17px; }
+.update-notes h4 { font-size: 14px; }
+.update-notes p { margin: 8px 0; color: var(--muted); }
+.update-notes ul, .update-notes ol { display: grid; gap: 8px; margin: 8px 0 16px; padding-left: 22px; }
+.update-notes li::marker { color: var(--signal); }
+.update-progress { margin-top: 20px; }
+.update-progress > div:first-child { display: flex; justify-content: space-between; margin-bottom: 8px; }
+.update-progress strong { color: var(--signal); font-variant-numeric: tabular-nums; }
+.update-track { height: 9px; overflow: hidden; border: 1px solid var(--line); background: #09090a; }
+.update-track > div { width: 0; height: 100%; background: var(--signal); transition: width .2s ease; }
+.update-error { margin: 18px 0 0; color: var(--danger); }
+.update-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+.update-actions .primary-action { justify-content: center; min-width: 220px; }
 
 @media (max-width: 860px) {
   main { padding: 18px 16px 60px; }

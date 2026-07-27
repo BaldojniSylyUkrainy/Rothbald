@@ -11,3 +11,4 @@ release/
 *.swo
 .pytest_cache/
 .coverage
+.secrets/
