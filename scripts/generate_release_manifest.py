@@ -27,8 +27,8 @@ def main() -> None:
     if tag != f"v{version}":
         raise SystemExit(f"REQUESTED_TAG must equal v{version}")
     expected = {
-        "darwin-aarch64": f"Rothbald_{version}_aarch64.dmg",
-        "windows-x86_64": f"Rothbald_{version}_windows-x86_64-setup.exe",
+        "darwin-aarch64": f"Rothbald-{version}-Mac-Apple-Silicon.dmg",
+        "windows-x86_64": f"Rothbald-{version}-Windows-Setup.exe",
     }
     missing = [name for name in expected.values() if not (ASSETS / name).is_file()]
     if missing:

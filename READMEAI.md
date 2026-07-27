@@ -227,7 +227,7 @@ The desktop launcher binds the local HTTP socket synchronously before it creates
 - External SSD disconnection causes media access errors but must not delete completed transcript data.
 - `setup.command` performs Apple-Silicon, Python ≥3.11, ffmpeg/ffprobe, and 8-GB-free-space checks and installs `requirements-macos.lock`; `setup.ps1` installs `requirements-windows.lock`. Model verification/download now belongs to the in-app model gate.
 - `setup.ps1` performs the corresponding Windows dependency checks and installs the platform-marked requirements.
-- `.github/workflows/build.yml` tests and packages CI artifacts on native `macos-15` ARM64 and `windows-latest` runners.
+- `.github/workflows/build.yml` tests and packages on native `macos-15` ARM64 and `windows-latest` runners for `main`, pull requests, and explicit manual dispatches. Pushing a release tag must not start a duplicate native build; the manually dispatched release workflow is the only post-tag build. Pull requests verify full packaging without uploading the large bundles; main/manual CI artifacts are retained for one day.
 - `.github/workflows/release.yml` is manual-only and uses the `release` environment. Its preflight accepts only an existing four-part tag that equals `VERSION`, points at the dispatched current `main` commit, and was created after green main CI. It installs platform-specific runtime/build locks, signs/notarizes/staples the Apple Silicon DMG, restores the runner's original Keychain search list, verifies the Windows bundle, generates checksums plus `latest.json`, and creates a draft release that must be published manually. Environment reviewers and branch policy are optional defense-in-depth when the repository's GitHub plan supports them.
 - Build version metadata is generated from `VERSION` before PyInstaller. The packaged UI reads `/api/app`; never hardcode a displayed version in HTML or JavaScript.
 
@@ -274,6 +274,9 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 
 ### 2026-07-27
 
+- Prepared `0.1.2.0` as the public-release candidate and removed the duplicate `test-and-build` tag trigger. A release now costs one normal `main` CI matrix plus the intentionally dispatched signed release matrix, never an automatic third matrix on tag push. Large CI bundles are not uploaded for pull requests and are retained for only one day on main/manual runs.
+- Replaced architecture-oriented release filenames with user-facing names: `Rothbald-<version>-Mac-Apple-Silicon.dmg`, the matching macOS ZIP, and `Rothbald-<version>-Windows-Setup.exe`. The manifest and checksum generator treats these names as the release contract.
+- Confirmed that Rothbald has no binary auto-updater. `latest.json` is currently a download/checksum manifest only; no updater private key is required or accepted, and no secret/public key is embedded in the application.
 - Released the `0.1.1.0` readiness hardening: rescan now distinguishes content changes from mtime-only changes and preserves the last searchable transcript/semantic revision until replacement succeeds.
 - Made the desktop launcher own its listening socket before opening QtWebEngine, fail clearly on a second instance/occupied port, daemonize request handlers, and close the server cleanly with the window.
 - Added separate reproducible Python 3.12 runtime and PyInstaller build locks for Apple Silicon and Windows x64. CI and release builds now install only the matching lock pair; dependency audit reported no known vulnerabilities.

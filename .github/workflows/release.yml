@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing green-main release tag, for example v0.1.1.0"
+        description: "Existing green-main release tag, for example v0.1.2.0"
         required: true
         type: string
       notes:
@@ -109,7 +109,7 @@ jobs:
           }
           & $iscc "/DMyAppVersion=$version" "installer\Rothbald.iss"
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
-          $installer = "release-assets/Rothbald_${version}_windows-x86_64-setup.exe"
+          $installer = "release-assets/Rothbald-${version}-Windows-Setup.exe"
           if (!(Test-Path -LiteralPath $installer) -or (Get-Item $installer).Length -eq 0) {
             throw "Windows installer is missing or empty"
           }
@@ -211,10 +211,10 @@ jobs:
             exit 1
           fi
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$RELEASE_DIR/Rothbald_${VERSION}_aarch64.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$RELEASE_DIR/Rothbald-${VERSION}-Mac-Apple-Silicon.zip"
           ditto "$APP_PATH" "$STAGING_DIR/Rothbald.app"
           ln -s /Applications "$STAGING_DIR/Applications"
-          DMG_PATH="$RELEASE_DIR/Rothbald_${VERSION}_aarch64.dmg"
+          DMG_PATH="$RELEASE_DIR/Rothbald-${VERSION}-Mac-Apple-Silicon.dmg"
           hdiutil create -volname Rothbald -srcfolder "$STAGING_DIR" -ov -format UDZO "$DMG_PATH"
           codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$DMG_PATH"
           codesign --verify --strict --verbose=2 "$DMG_PATH"

@@ -8,13 +8,13 @@ Rothbald знаходить відео в обраній папці, перет�
 
 ### Apple Silicon
 
-1. Завантаж `Rothbald_<версія>_aarch64.dmg` зі сторінки Releases.
+1. Завантаж `Rothbald-<версія>-Mac-Apple-Silicon.dmg` зі сторінки Releases.
 2. Відкрий DMG і перетягни Rothbald у Applications.
 3. Запусти Rothbald як звичайний застосунок.
 
 ### Windows x64
 
-1. Завантаж `Rothbald_<версія>_windows-x86_64-setup.exe` зі сторінки Releases.
+1. Завантаж `Rothbald-<версія>-Windows-Setup.exe` зі сторінки Releases.
 2. Запусти інсталятор. До копіювання файлів він перевірить мінімальну RAM, місце для моделей і базову продуктивність CPU.
 3. Відкрий Rothbald через Start Menu або ярлик на робочому столі.
 

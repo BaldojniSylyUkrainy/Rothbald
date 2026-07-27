@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
 import tempfile
 import time
@@ -14,6 +16,7 @@ import server
 import transcribe_video
 from hardware_check import HardwarePreflight
 from model_manager import ModelManager
+from scripts import generate_release_manifest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -423,6 +426,31 @@ class ModelBootstrapTests(unittest.TestCase):
 
 
 class ReleaseContractTests(unittest.TestCase):
+    def test_release_manifest_uses_user_facing_installer_names(self) -> None:
+        version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        with tempfile.TemporaryDirectory() as temporary:
+            assets = Path(temporary)
+            macos_name = f"Rothbald-{version}-Mac-Apple-Silicon.dmg"
+            windows_name = f"Rothbald-{version}-Windows-Setup.exe"
+            (assets / macos_name).write_bytes(b"macos")
+            (assets / windows_name).write_bytes(b"windows")
+            with mock.patch.object(generate_release_manifest, "ASSETS", assets), \
+                 mock.patch.object(generate_release_manifest, "REPOSITORY", "example/Rothbald"), \
+                 mock.patch.dict(
+                     os.environ,
+                     {"REQUESTED_TAG": f"v{version}", "RELEASE_NOTES": "Тестовий реліз"},
+                 ):
+                generate_release_manifest.main()
+
+            manifest = json.loads((assets / "latest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["platforms"]["darwin-aarch64"]["url"],
+                             f"https://github.com/example/Rothbald/releases/download/v{version}/{macos_name}")
+            self.assertEqual(manifest["platforms"]["windows-x86_64"]["url"],
+                             f"https://github.com/example/Rothbald/releases/download/v{version}/{windows_name}")
+            checksums = (assets / "SHA256SUMS.txt").read_text(encoding="utf-8")
+            self.assertIn(f"  {macos_name}\n", checksums)
+            self.assertIn(f"  {windows_name}\n", checksums)
+
     def test_platform_locks_include_direct_and_platform_dependencies(self) -> None:
         direct = {}
         for raw in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines():
@@ -450,9 +478,17 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertRegex(version, r"^\d+\.\d+\.\d+\.\d+$")
         self.assertIn('\"LSMinimumSystemVersion\": \"14.0\"', (ROOT / "Rothbald.spec").read_text())
         self.assertIn("macOS 14.0+", (ROOT / "README.md").read_text(encoding="utf-8"))
+        build_workflow = (ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8")
+        self.assertNotIn('tags: ["v*"]', build_workflow)
+        self.assertIn("if: github.event_name != 'pull_request'", build_workflow)
+        self.assertIn("retention-days: 1", build_workflow)
+        self.assertIn("Rothbald-*-Windows-Setup.exe", build_workflow)
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertIn("gh release create \"$TAG\" --verify-tag --draft", workflow)
         self.assertIn('[[ "$REQUESTED_TAG" =~ ^v[0-9]+\\.', workflow)
+        self.assertIn("Rothbald-${VERSION}-Mac-Apple-Silicon.dmg", workflow)
+        installer = (ROOT / "installer/Rothbald.iss").read_text(encoding="utf-8")
+        self.assertIn("OutputBaseFilename=Rothbald-{#MyAppVersion}-Windows-Setup", installer)
 
 
 if __name__ == "__main__":

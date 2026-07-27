@@ -3,7 +3,6 @@ name: test-and-build
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -28,7 +27,7 @@ jobs:
             lockfile: requirements-windows.lock
             build_lockfile: requirements-build-windows.lock
             artifact: Rothbald-Windows-x64
-            artifact_path: release-assets/Rothbald_*_windows-x86_64-setup.exe
+            artifact_path: release-assets/Rothbald-*-Windows-Setup.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -74,7 +73,9 @@ jobs:
           & $iscc "/DMyAppVersion=$version" "installer\Rothbald.iss"
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
       - uses: actions/upload-artifact@v6
+        if: github.event_name != 'pull_request'
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact_path }}
           if-no-files-found: error
+          retention-days: 1
