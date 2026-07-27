@@ -7,8 +7,25 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import app_info
 import server
 from model_manager import ModelManager
+
+
+class ApplicationInfoTests(unittest.TestCase):
+    def test_embedded_build_metadata_is_preferred(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "VERSION").write_text("9.8.7.6\n", encoding="utf-8")
+            (root / "build-info.json").write_text(
+                '{"version":"1.2.3.4","commit":"abcdef123456","built_at":"2026-07-27T00:00:00Z","channel":"release"}',
+                encoding="utf-8",
+            )
+            with mock.patch.object(app_info, "RUNTIME_ROOT", root), mock.patch.object(app_info, "SOURCE_ROOT", root):
+                info = app_info.application_info()
+            self.assertEqual(info["version"], "1.2.3.4")
+            self.assertEqual(info["commit"], "abcdef123456")
+            self.assertEqual(info["channel"], "release")
 
 
 class TemporaryStorageTest(unittest.TestCase):

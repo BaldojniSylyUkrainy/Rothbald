@@ -5,6 +5,7 @@ __pycache__/
 data/
 build/
 dist/
+release/
 *.spec.bak
 *.swp
 *.swo

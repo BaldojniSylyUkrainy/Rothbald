@@ -292,6 +292,17 @@ aside { min-width: 0; border-right: 1px solid var(--line); padding-right: 28px; 
 .result-sentinel { padding: 13px; color: var(--muted); text-align: center; }
 .toast { position: fixed; z-index: 50; right: 24px; bottom: 24px; max-width: 420px; opacity: 0; transform: translateY(12px); pointer-events: none; border: 1px solid var(--paper); background: var(--panel-2); padding: 13px 16px; box-shadow: 0 12px 40px #0009; transition: .2s; }
 .toast.show { opacity: 1; transform: translateY(0); }
+.app-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 24px;
+  max-width: 1280px; margin: 0 auto; padding: 22px 28px 28px;
+  border-top: 1px solid var(--line); color: var(--muted); font-size: 11px;
+}
+.app-footer p { margin: 0; }
+.app-footer a { color: var(--text); text-decoration-color: #66666d; text-underline-offset: 3px; }
+.app-footer a:hover { color: var(--signal); text-decoration-color: currentColor; }
+.app-build { display: flex; gap: 7px; white-space: nowrap; }
+.app-build span { color: var(--text); }
+.app-build strong { color: var(--signal); font-variant-numeric: tabular-nums; }
 
 @media (max-width: 860px) {
   main { padding: 18px 16px 60px; }
@@ -314,6 +325,7 @@ aside { min-width: 0; border-right: 1px solid var(--line); padding-right: 28px; 
   .queue-detail-action { width: 100%; align-items: flex-start; justify-content: space-between; text-align: left; }
   .queue-controls { align-items: stretch; flex-wrap: wrap; }
   .queue-controls span { width: 100%; margin-left: 0; text-align: left; }
+  .app-footer { align-items: flex-start; flex-direction: column; padding: 20px 16px 24px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

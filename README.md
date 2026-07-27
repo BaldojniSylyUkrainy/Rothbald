@@ -29,6 +29,9 @@ Rothbald рекурсивно знаходить відео в папці про
 
 Rothbald відкривається як окремий desktop-застосунок у нативному вікні WKWebView на macOS та WebView2 на Windows. Зовнішній браузер, адресний рядок або окрема вкладка для готової збірки не потрібні.
 
+У footer застосунку показується версія, вбудована саме в поточну збірку, а також
+контакт підтримки: [baldojnisyly@gmail.com](mailto:baldojnisyly@gmail.com).
+
 ## Керування проєктами
 
 - «Новий проєкт» додає папку без копіювання відео.
@@ -55,6 +58,14 @@ Workflow `.github/workflows/build.yml` запускає перевірки та 
 
 Обидві збірки отримують власну сучасну іконку `Ro`, створену з того самого рукописного логотипа Rothbald, що використовується в інтерфейсі.
 
-Запуск відбувається на push у `main`, pull request, тег `v*` або вручну через Actions. Збірки поки не підписані: перед публічним релізом додай Apple Developer ID/notarization і Windows code-signing certificate.
+Запуск відбувається на push у `main`, pull request, тег `v*` або вручну через Actions.
+
+Окремий ручний workflow `.github/workflows/release.yml` повторює захищений
+release-процес `yt-dlp BD`: збирає Windows x64, підписує й нотаризує Apple Silicon
+DMG, генерує `latest.json`/`SHA256SUMS.txt` та створює draft GitHub Release без
+автопублікації. Версія береться з `VERSION` і вбудовується в binary metadata,
+`Info.plist`, Windows version resource та footer застосунку під час build.
+
+Інструкція власнику repository: [docs/GITHUB_RELEASE_HANDOFF_UK.md](docs/GITHUB_RELEASE_HANDOFF_UK.md).
 
 Технічна пам’ять про архітектуру та інваріанти зберігається в [READMEAI.md](READMEAI.md).

@@ -74,6 +74,16 @@ async function api(url, options = {}) {
   return data;
 }
 
+async function loadAppInfo() {
+  try {
+    const info = await api('/api/app');
+    $('#appVersion').textContent = `v${info.version}`;
+    $('#appVersion').title = info.commit ? `Build ${info.commit.slice(0, 12)}` : '';
+  } catch {
+    $('#appVersion').textContent = 'версія недоступна';
+  }
+}
+
 function modelBytes(value) {
   const bytes = Math.max(0, +value || 0);
   if (!bytes) return 'очікую';
@@ -696,4 +706,5 @@ $('#resultTabs').addEventListener('click', event => {
 $('#searchButton').addEventListener('click', search);
 searchInput.addEventListener('keydown', event => { if (event.key === 'Enter') search(); });
 $('#retryModels').addEventListener('click', () => bootstrapModels(true));
+loadAppInfo();
 bootstrapModels();

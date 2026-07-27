@@ -42,6 +42,9 @@ Selecting a video only controls the player. It must never narrow the search scop
 - `static/app.js` — client state, queue progress, search tabs, video selection, and project actions.
 - `static/style.css` — responsive dark interface.
 - `requirements.txt` — direct Python dependencies; `requirements.lock` is the reproducible full environment used by setup.
+- `VERSION` — the single four-component public application version.
+- `app_info.py` and `scripts/prepare_build.py` — runtime build metadata and deterministic platform version resources.
+- `.github/workflows/release.yml` — manual gated signed/notarized draft-release pipeline.
 - `tests/test_server.py` — standard-library regression tests for migrations, queue claiming, matching, ranges, and chunk checkpoints.
 - `README.md` — user-facing setup and usage.
 
@@ -215,7 +218,9 @@ State-changing requests reject foreign browser origins; missing Origin remains a
 - External SSD disconnection causes media access errors but must not delete completed transcript data.
 - `setup.command` performs Apple-Silicon, Python ≥3.11, ffmpeg/ffprobe, and 8-GB-free-space checks and installs `requirements.lock`. Model verification/download now belongs to the in-app model gate.
 - `setup.ps1` performs the corresponding Windows dependency checks and installs the platform-marked requirements.
-- `.github/workflows/build.yml` tests and packages on native `macos-15` ARM64 and `windows-latest` runners. PyInstaller builds are unsigned until release signing secrets and steps are added.
+- `.github/workflows/build.yml` tests and packages CI artifacts on native `macos-15` ARM64 and `windows-latest` runners.
+- `.github/workflows/release.yml` is manual-only and uses the protected `release` environment. It signs/notarizes/staples the Apple Silicon DMG, verifies the Windows bundle, generates checksums plus `latest.json`, and creates a draft release that must be published manually.
+- Build version metadata is generated from `VERSION` before PyInstaller. The packaged UI reads `/api/app`; never hardcode a displayed version in HTML or JavaScript.
 
 ## Verification checklist
 
@@ -251,12 +256,19 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 
 ## Packaging status
 
-- Native unsigned Apple Silicon and Windows bundles are prepared through PyInstaller and GitHub Actions.
+- Native CI bundles are prepared through PyInstaller and GitHub Actions; the manual release path additionally signs and notarizes Apple Silicon.
 - The bundle opens as a standalone desktop window through pywebview, not as a browser tab. PyInstaller embeds the platform-specific Dock/executable icon.
 - Model updates are checked in-app against published Hugging Face revisions and downloaded with exact byte progress.
-- Application binary updates, release hosting, signature verification, rollback, Apple notarization, and Windows code signing still require release credentials and a final distribution policy.
+- Draft GitHub Release hosting, embedded build identity, macOS Developer ID signing/notarization, and cross-platform SHA-256 manifests are implemented. Automatic binary updates and Windows Authenticode still require a separate product decision/certificate.
 
 ## Changelog
+
+### 2026-07-27
+
+- Added a quiet application footer with `baldojnisyly@gmail.com` support contact and the version embedded by the current build. The UI fetches `/api/app`; it contains no hardcoded version string.
+- Added the single four-part `VERSION`, generated build metadata, macOS `Info.plist` versioning, Windows executable version resources, and regression coverage for embedded metadata precedence.
+- Added a manual-only protected release workflow modeled on `yt-dlp BD`: Windows x64 verification, Apple Silicon Developer ID signing, hardened runtime, notarization, stapling, Gatekeeper validation, checksums, `latest.json`, and draft GitHub Release assembly.
+- Added owner handoff and Apple credential documentation. Tauri updater keys are intentionally not reused because Rothbald is a PyInstaller application and cannot verify Tauri updater signatures.
 
 ### 2026-07-26
 

@@ -1,0 +1,213 @@
+name: Manual signed release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Four-part release tag, for example v0.1.0.0"
+        required: true
+        type: string
+      notes:
+        description: "Release notes stored in latest.json"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    environment: release
+    env:
+      REQUESTED_TAG: ${{ inputs.tag }}
+      ROTHBALD_BUILD_CHANNEL: release
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Validate tag
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw VERSION).Trim()
+          if ($env:REQUESTED_TAG -ne "v$version") {
+            throw "Requested tag must be v$version"
+          }
+          "ROTHBALD_BUILD_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Install ffmpeg
+        run: choco install ffmpeg --no-progress -y
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt -r requirements-build.txt
+      - name: Verify source and tests
+        shell: bash
+        run: |
+          python scripts/prepare_build.py
+          python -m py_compile app_info.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py
+          node --check static/app.js
+          python -m unittest discover -s tests -v
+      - name: Build Windows application
+        run: pyinstaller --noconfirm Rothbald.spec
+      - name: Archive and verify Windows application
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw VERSION).Trim()
+          if (!(Test-Path -LiteralPath "dist/Rothbald/Rothbald.exe")) {
+            throw "PyInstaller did not create Rothbald.exe"
+          }
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          Compress-Archive -Path dist\Rothbald -DestinationPath "release-assets/Rothbald_${version}_windows-x86_64.zip"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-windows
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 1
+
+  macos:
+    name: macOS Apple Silicon
+    runs-on: macos-15
+    environment: release
+    env:
+      REQUESTED_TAG: ${{ inputs.tag }}
+      ROTHBALD_BUILD_CHANNEL: release
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+      APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Validate tag and release credentials
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          [[ "$REQUESTED_TAG" == "v$VERSION" ]] || { echo "Requested tag must be v$VERSION"; exit 1; }
+          for NAME in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_CONTENT APPLE_SIGNING_IDENTITY; do
+            [[ -n "${!NAME:-}" ]] || { echo "$NAME is missing in the release environment"; exit 1; }
+          done
+          echo "ROTHBALD_BUILD_VERSION=$VERSION" >> "$GITHUB_ENV"
+      - name: Install ffmpeg
+        run: brew install ffmpeg
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt -r requirements-build.txt
+      - name: Verify source and tests
+        run: |
+          python scripts/prepare_build.py
+          python -m py_compile app_info.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py
+          node --check static/app.js
+          python -m unittest discover -s tests -v
+      - name: Import Developer ID certificate
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/rothbald-signing.keychain-db"
+          CERTIFICATE_PATH="$RUNNER_TEMP/rothbald-certificate.p12"
+          API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          {
+            echo "APPLE_API_KEY_PATH=$API_KEY_PATH"
+            echo "SIGNING_KEYCHAIN_PATH=$KEYCHAIN_PATH"
+            echo "SIGNING_CERTIFICATE_PATH=$CERTIFICATE_PATH"
+          } >> "$GITHUB_ENV"
+          printf '%s' "$APPLE_CERTIFICATE" | /usr/bin/base64 --decode > "$CERTIFICATE_PATH" || { echo "APPLE_CERTIFICATE is not valid Base64"; exit 1; }
+          printf '%s' "$APPLE_API_KEY_CONTENT" > "$API_KEY_PATH"
+          chmod 600 "$CERTIFICATE_PATH" "$API_KEY_PATH"
+          [[ -s "$CERTIFICATE_PATH" ]] || { echo "APPLE_CERTIFICATE decoded to an empty file"; exit 1; }
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH" || { echo "Keychain could not import APPLE_CERTIFICATE"; exit 1; }
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" "$HOME/Library/Keychains/login.keychain-db"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -F "$APPLE_SIGNING_IDENTITY"
+      - name: Build, sign, notarize, staple, and verify
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          pyinstaller --noconfirm Rothbald.spec
+          APP_PATH="$PWD/dist/Rothbald.app"
+          RELEASE_DIR="$PWD/release-assets"
+          STAGING_DIR="$(mktemp -d "$RUNNER_TEMP/rothbald-dmg.XXXXXX")"
+          mkdir -p "$RELEASE_DIR"
+          codesign --force --deep --options runtime --timestamp --entitlements assets/macos-entitlements.plist --sign "$APPLE_SIGNING_IDENTITY" "$APP_PATH"
+          SIGNATURE_INFO="$(codesign --display --verbose=4 "$APP_PATH" 2>&1)"
+          grep -q "Authority=Developer ID Application:" <<<"$SIGNATURE_INFO"
+          grep -q "flags=.*runtime" <<<"$SIGNATURE_INFO"
+          grep -q "Timestamp=" <<<"$SIGNATURE_INFO"
+          ! codesign --display --entitlements :- "$APP_PATH" 2>/dev/null | grep -q "com.apple.security.get-task-allow"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$RELEASE_DIR/Rothbald_${VERSION}_aarch64.zip"
+          ditto "$APP_PATH" "$STAGING_DIR/Rothbald.app"
+          ln -s /Applications "$STAGING_DIR/Applications"
+          DMG_PATH="$RELEASE_DIR/Rothbald_${VERSION}_aarch64.dmg"
+          hdiutil create -volname Rothbald -srcfolder "$STAGING_DIR" -ov -format UDZO "$DMG_PATH"
+          codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$DMG_PATH"
+          codesign --verify --strict --verbose=2 "$DMG_PATH"
+          hdiutil verify "$DMG_PATH"
+          NOTARY_RESULT="$RUNNER_TEMP/notary-result.json"
+          xcrun notarytool submit "$DMG_PATH" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait --output-format json > "$NOTARY_RESULT"
+          cat "$NOTARY_RESULT"
+          python - "$NOTARY_RESULT" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1], encoding="utf-8"))
+          if result.get("status") != "Accepted" or not result.get("id"):
+              raise SystemExit("Apple notarization was not Accepted")
+          PY
+          xcrun stapler staple "$DMG_PATH"
+          xcrun stapler validate "$DMG_PATH"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-macos
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 1
+      - name: Remove temporary signing material
+        if: always()
+        run: |
+          security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" || true
+          [[ -z "${SIGNING_KEYCHAIN_PATH:-}" ]] || security delete-keychain "$SIGNING_KEYCHAIN_PATH" || true
+          [[ -z "${SIGNING_CERTIFICATE_PATH:-}" ]] || rm -f "$SIGNING_CERTIFICATE_PATH"
+          [[ -z "${APPLE_API_KEY_PATH:-}" ]] || rm -f "$APPLE_API_KEY_PATH"
+
+  publish-draft:
+    name: Assemble draft release
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Generate and verify release manifest
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+          RELEASE_NOTES: ${{ inputs.notes }}
+          RELEASE_ASSETS_DIR: release-assets
+        run: |
+          python scripts/generate_release_manifest.py
+          test -s release-assets/latest.json
+          test -s release-assets/SHA256SUMS.txt
+      - name: Create or update draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
+            [[ "$IS_DRAFT" == "true" ]] || { echo "Release $TAG is already published; refusing to overwrite it"; exit 1; }
+          else
+            gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TAG"
+          fi
+          gh release upload "$TAG" release-assets/* --clobber

@@ -24,6 +24,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from app_info import application_info
 from model_manager import (
     EMBEDDING_PATTERNS,
     EMBEDDING_REPO,
@@ -1480,6 +1481,8 @@ class Handler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
         if parsed.path == "/api/bootstrap":
             return respond(self, model_manager.snapshot())
+        if parsed.path == "/api/app":
+            return respond(self, application_info())
         if parsed.path == "/api/projects":
             return self.projects()
         if parsed.path == "/api/videos":
