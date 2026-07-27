@@ -33,7 +33,10 @@ class ApplicationInfoTests(unittest.TestCase):
              mock.patch.object(rothbald, "application_root", return_value=Path("/app/runtime")), \
              mock.patch.dict(rothbald.os.environ, {"PATH": "/usr/bin"}, clear=False):
             rothbald.configure_bundled_tools()
-            self.assertEqual(rothbald.os.environ["PATH"].split(rothbald.os.pathsep)[0], "/app/runtime")
+            self.assertEqual(
+                rothbald.os.environ["PATH"].split(rothbald.os.pathsep)[0],
+                str(Path("/app/runtime")),
+            )
 
 
 class TemporaryStorageTest(unittest.TestCase):
