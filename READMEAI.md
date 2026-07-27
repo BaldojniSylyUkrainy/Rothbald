@@ -84,7 +84,7 @@ Important resource decision: semantic embeddings must run on CPU. Do not move th
 ### Model bootstrap and updates
 
 - The HTTP server starts before models are ready so the UI can show the model gate.
-- Model checks, downloads, queue workers, and semantic recovery do not start until the hardware preflight is accepted. Unsupported architecture/OS, less than 8 GB RAM, or less than 12 GB free space blocks model setup; lower-than-recommended resources produce an explicit slow-performance warning.
+- Model checks, downloads, queue workers, and semantic recovery do not start until the hardware preflight is accepted. Unsupported architecture/OS, less than 8 GB RAM, or less than 6 GB free space blocks model setup; lower-than-recommended resources produce an explicit slow-performance warning.
 - `GET /api/hardware` exposes the report and available compute devices. `POST /api/hardware/confirm` persists the hardware fingerprint plus device choice in `hardware.json`. A material hardware/driver/resource-tier change requires acknowledgement again.
 - macOS Apple Silicon always uses MLX on the Apple GPU. Windows offers Auto, CPU, and every NVIDIA device that CTranslate2 confirms is CUDA-available. Semantic embeddings remain CPU-only regardless of this choice.
 - `GET /api/bootstrap` exposes overall status plus separate speech/meaning byte totals, downloaded bytes, percentages, transfer speed, estimated time remaining, current file, and errors.
@@ -272,7 +272,7 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 ### 2026-07-27
 
 - Added a mandatory pre-model hardware gate that checks supported OS/architecture, RAM, free disk, CPU capacity, and usable compute devices before any model download or queue worker starts. It blocks unsafe configurations, warns about likely slow operation, persists a hardware fingerprint, and rechecks after meaningful configuration changes.
-- Added Auto / CPU / CUDA device selection on Windows and explicit Apple GPU/MLX reporting on macOS. Documented 8 GB/12 GB minimum and 16 GB/20 GB recommended requirements; the macOS bundle now declares 13.5 as its minimum system version.
+- Added Auto / CPU / CUDA device selection on Windows and explicit Apple GPU/MLX reporting on macOS. Documented 8 GB RAM/6 GB disk minimum and 16 GB RAM/8 GB disk recommended requirements; the macOS bundle now declares 13.5 as its minimum system version.
 - Moved project navigation and destructive actions into a visible top toolbar, made project-card deletion explicit, and reduced the application footer to a compact bottom row.
 - Added a quiet application footer with `baldojnisyly@gmail.com` support contact and the version embedded by the current build. The UI fetches `/api/app`; it contains no hardcoded version string.
 - Added the single four-part `VERSION`, generated build metadata, macOS `Info.plist` versioning, Windows executable version resources, and regression coverage for embedded metadata precedence.
@@ -333,7 +333,7 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 - Added a Photoshop/Premiere-style recent-project home screen; startup no longer auto-opens the last project.
 - Added stable project-relative video identity, quick media availability checks, missing-media states, and `Locate` for moved or renamed folders.
 - Changed rescanning and startup checks to preserve transcripts and semantic indexes when media or an external SSD is missing.
-- Added `READMEAI.md` as persistent technical memory and linked it prominently from `README.md`.
+- Added `READMEAI.md` as persistent technical memory for repository maintenance.
 - Added full-folder re-transcription with confirmation, idle-queue protection, and atomic transcript replacement.
 - Added repeat-click and player `×` controls to clear video selection.
 - Diagnosed a real transcription stall at 8%; reserved Metal for Whisper, moved semantic embeddings to CPU, and added stalled-state UI plus a 15-minute watchdog.

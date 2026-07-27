@@ -77,9 +77,9 @@ begin
   end;
 
   DataPath := ExpandConstant('{localappdata}');
-  if GetSpaceOnDisk64(DataPath, FreeBytes, TotalBytes) and (FreeBytes < Int64(12884901888)) then
+  if GetSpaceOnDisk64(DataPath, FreeBytes, TotalBytes) and (FreeBytes < Int64(6442450944)) then
   begin
-    Result := 'Rothbald потребує щонайменше 12 ГБ вільного місця для застосунку, моделей і робочого кешу. Звільни місце та повтори встановлення.';
+    Result := 'Rothbald потребує щонайменше 6 ГБ вільного місця для застосунку, моделей і робочого кешу. Звільни місце та повтори встановлення.';
     Exit;
   end;
 end;

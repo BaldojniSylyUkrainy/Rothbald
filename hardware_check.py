@@ -15,8 +15,8 @@ from pathlib import Path
 GIB = 1024 ** 3
 MINIMUM_RAM = 8 * GIB
 RECOMMENDED_RAM = 16 * GIB
-MINIMUM_DISK = 12 * GIB
-RECOMMENDED_DISK = 20 * GIB
+MINIMUM_DISK = 6 * GIB
+RECOMMENDED_DISK = 8 * GIB
 MINIMUM_CPU_CORES = 4
 
 
@@ -203,9 +203,9 @@ class HardwarePreflight:
         elif ram and ram < RECOMMENDED_RAM:
             warnings.append("Оперативної пам’яті менше рекомендованих 16 ГБ — великі відео оброблятимуться повільніше.")
         if disk_free and disk_free < MINIMUM_DISK:
-            blockers.append("Для застосунку, моделей і робочого кешу потрібно щонайменше 12 ГБ вільного місця.")
+            blockers.append("Для застосунку, моделей і робочого кешу потрібно щонайменше 6 ГБ вільного місця.")
         elif disk_free and disk_free < RECOMMENDED_DISK:
-            warnings.append("Вільного місця менше рекомендованих 20 ГБ — кеш моделей може швидко заповнити диск.")
+            warnings.append("Вільного місця менше рекомендованих 8 ГБ — для наступного оновлення моделей може забракнути запасу.")
         if cpu_cores < MINIMUM_CPU_CORES:
             warnings.append("Менше 4 логічних ядер — інтерфейс і розпізнавання можуть суттєво гальмувати.")
         if sys.platform == "win32" and not any(item["key"].startswith("cuda:") and item["available"] for item in devices):
