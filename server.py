@@ -25,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from app_info import application_info
+from hardware_check import HardwarePreflight
 from model_manager import (
     EMBEDDING_PATTERNS,
     EMBEDDING_REPO,
@@ -77,7 +78,10 @@ active_processes: dict[str, subprocess.Popen] = {}
 interrupt_reasons: dict[str, str] = {}
 _embedder = None
 model_manager = get_model_manager(DATA_DIR)
+hardware_preflight = HardwarePreflight(DATA_DIR)
 folder_picker_callback = None
+runtime_lock = threading.Lock()
+runtime_started = False
 
 
 class JobInterrupted(RuntimeError):
@@ -1443,6 +1447,20 @@ def worker() -> None:
             jobs.task_done()
 
 
+def start_runtime() -> None:
+    """Start model work only after the machine check has been accepted."""
+    global runtime_started
+    if not hardware_preflight.apply_saved_device():
+        raise ValueError("Спочатку підтвердь перевірку сумісності комп’ютера")
+    model_manager.start()
+    with runtime_lock:
+        if runtime_started:
+            return
+        runtime_started = True
+        threading.Thread(target=worker, daemon=True, name="rothbald-worker").start()
+        resume_pending_semantic_indexing()
+
+
 def resume_pending_semantic_indexing() -> None:
     with db() as connection:
         semantic_rows = connection.execute(
@@ -1489,6 +1507,8 @@ class Handler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
         if parsed.path == "/api/bootstrap":
             return respond(self, model_manager.snapshot())
+        if parsed.path == "/api/hardware":
+            return respond(self, hardware_preflight.inspect())
         if parsed.path == "/api/app":
             return respond(self, application_info())
         if parsed.path == "/api/projects":
@@ -1515,9 +1535,22 @@ class Handler(BaseHTTPRequestHandler):
         if not self.trusted_origin():
             return respond(self, {"error": "Запит відхилено: недовірене джерело"}, 403)
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/hardware/confirm":
+            try:
+                length = min(16_384, max(0, int(self.headers.get("Content-Length", "0") or 0)))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                report = hardware_preflight.confirm(str(payload.get("device", "auto")))
+                start_runtime()
+                return respond(self, report)
+            except (ValueError, json.JSONDecodeError) as exc:
+                return respond(self, {"error": str(exc)}, 400)
         if path == "/api/bootstrap/start":
-            model_manager.start(force=model_manager.snapshot()["status"] == "error")
-            return respond(self, model_manager.snapshot(), 202)
+            try:
+                start_runtime()
+                model_manager.start(force=model_manager.snapshot()["status"] == "error")
+                return respond(self, model_manager.snapshot(), 202)
+            except ValueError as exc:
+                return respond(self, {"error": str(exc)}, 409)
         if path == "/api/projects/choose":
             return self.choose_folder()
         match = re.fullmatch(r"/api/projects/([0-9a-f]+)/open", path)
@@ -1807,9 +1840,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     init_storage()
-    model_manager.start()
-    threading.Thread(target=worker, daemon=True).start()
-    resume_pending_semantic_indexing()
+    if hardware_preflight.apply_saved_device():
+        start_runtime()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Відкрий http://{HOST}:{PORT}")
     print(f"Модель: {MODEL}")

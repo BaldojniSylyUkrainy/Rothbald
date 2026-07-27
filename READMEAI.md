@@ -20,7 +20,7 @@ Selecting a video only controls the player. It must never narrow the search scop
 ## Target environments
 
 - Apple Silicon uses `mlx-whisper` and is the primary optimized target.
-- Windows x64 uses `faster-whisper` Turbo on CPU/int8 by default. `ROTHBALD_CUDA=1` opts into CUDA/float16 when the machine has a compatible runtime.
+- Windows x64 uses `faster-whisper` Turbo. The hardware gate persists `ROTHBALD_DEVICE=auto|cpu|cuda:N`; Auto prefers a CTranslate2-visible NVIDIA GPU and otherwise falls back to CPU/int8.
 - Source launches require `ffmpeg` and `ffprobe`; packaged builds include the Python runtime, PySide6/QtWebEngine, both media binaries, and all backend dependencies.
 - Python virtual environment: `.venv/`.
 - Local URL: `http://127.0.0.1:8765`.
@@ -36,6 +36,7 @@ Selecting a video only controls the player. It must never narrow the search scop
 - `transcribe_video.py` — isolated MLX Whisper transcription subprocess.
 - `prepare_models.py` / `prepare_semantic.py` — download and verify the Whisper and semantic models during setup.
 - `model_manager.py` — platform model manifest, remote revision check, resilient local verification, exact byte progress, and background downloads for the startup gate.
+- `hardware_check.py` — first-run architecture, OS, RAM, disk, CPU, CUDA-device detection, persisted acknowledgement, and compute-device preference.
 - `rothbald.py` / `Rothbald.spec` — PySide6/QtWebEngine native desktop-window launcher and self-contained PyInstaller definition.
 - `assets/app-icon.png`, `.icns`, and `.ico` — rounded `Ro` application icon derived from the same Bradley Hand wordmark used by the UI.
 - `static/index.html` — application markup.
@@ -83,6 +84,9 @@ Important resource decision: semantic embeddings must run on CPU. Do not move th
 ### Model bootstrap and updates
 
 - The HTTP server starts before models are ready so the UI can show the model gate.
+- Model checks, downloads, queue workers, and semantic recovery do not start until the hardware preflight is accepted. Unsupported architecture/OS, less than 8 GB RAM, or less than 12 GB free space blocks model setup; lower-than-recommended resources produce an explicit slow-performance warning.
+- `GET /api/hardware` exposes the report and available compute devices. `POST /api/hardware/confirm` persists the hardware fingerprint plus device choice in `hardware.json`. A material hardware/driver/resource-tier change requires acknowledgement again.
+- macOS Apple Silicon always uses MLX on the Apple GPU. Windows offers Auto, CPU, and every NVIDIA device that CTranslate2 confirms is CUDA-available. Semantic embeddings remain CPU-only regardless of this choice.
 - `GET /api/bootstrap` exposes overall status plus separate speech/meaning byte totals, downloaded bytes, percentages, transfer speed, estimated time remaining, current file, and errors.
 - `POST /api/bootstrap/start` starts or retries the background check.
 - Every launch verifies local snapshots and checks the current Hugging Face revision when online. A changed revision downloads through the same progress UI and updates `model-manifest.json` only after both model snapshots verify.
@@ -187,6 +191,8 @@ Queue items are three-tuples `(action, video_id, queue_generation)`. Never enque
 
 - `GET /api/projects`
 - `GET /api/bootstrap`
+- `GET /api/hardware`
+- `POST /api/hardware/confirm`
 - `POST /api/bootstrap/start`
 - `POST /api/projects/choose`
 - `POST /api/projects/{id}/open`
@@ -227,7 +233,7 @@ State-changing requests reject foreign browser origins; missing Origin remains a
 Run after changes:
 
 ```bash
-.venv/bin/python -m py_compile server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py rothbald.py
+.venv/bin/python -m py_compile hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py rothbald.py
 node --check static/app.js
 .venv/bin/python -m unittest discover -s tests -v
 ```
@@ -265,6 +271,9 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 
 ### 2026-07-27
 
+- Added a mandatory pre-model hardware gate that checks supported OS/architecture, RAM, free disk, CPU capacity, and usable compute devices before any model download or queue worker starts. It blocks unsafe configurations, warns about likely slow operation, persists a hardware fingerprint, and rechecks after meaningful configuration changes.
+- Added Auto / CPU / CUDA device selection on Windows and explicit Apple GPU/MLX reporting on macOS. Documented 8 GB/12 GB minimum and 16 GB/20 GB recommended requirements; the macOS bundle now declares 13.5 as its minimum system version.
+- Moved project navigation and destructive actions into a visible top toolbar, made project-card deletion explicit, and reduced the application footer to a compact bottom row.
 - Added a quiet application footer with `baldojnisyly@gmail.com` support contact and the version embedded by the current build. The UI fetches `/api/app`; it contains no hardcoded version string.
 - Added the single four-part `VERSION`, generated build metadata, macOS `Info.plist` versioning, Windows executable version resources, and regression coverage for embedded metadata precedence.
 - Added a manual-only protected release workflow modeled on `yt-dlp BD`: Windows x64 verification, Apple Silicon Developer ID signing, hardened runtime, notarization, stapling, Gatekeeper validation, checksums, `latest.json`, and draft GitHub Release assembly.

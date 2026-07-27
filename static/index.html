@@ -14,12 +14,22 @@
       <p class="model-kicker">Підготовка локального двигуна</p>
       <h1 id="modelGateTitle">Перевіряю моделі</h1>
       <p id="modelGateCopy">Це займає кілька секунд. Під час першого запуску застосунок завантажить потрібні файли.</p>
+      <div id="hardwarePanel" class="hardware-panel hidden">
+        <div id="hardwareStats" class="hardware-stats"></div>
+        <div id="hardwareMessages" class="hardware-messages"></div>
+        <label class="hardware-device" for="hardwareDevice"><span>Обчислювальний пристрій</span><select id="hardwareDevice"></select></label>
+        <button id="confirmHardware" class="hardware-confirm">Підтвердити й підготувати моделі</button>
+        <button id="recheckHardware" class="hardware-recheck hidden">Перевірити знову</button>
+        <p class="hardware-note">Цей вибір можна автоматично переглянути після зміни обладнання або драйверів.</p>
+      </div>
+      <div id="modelProgress">
       <div class="model-total">
         <div class="model-total-head"><span id="modelPhase">Перевірка</span><span class="model-total-status"><span id="modelEta"></span><strong id="modelTotalPercent">0%</strong></span></div>
         <div id="modelTotalTrack" class="model-track" role="progressbar" aria-label="Загальний прогрес моделей" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="modelTotalFill"></div></div>
       </div>
       <div id="modelRows" class="model-rows"></div>
       <button id="retryModels" class="model-retry hidden">Спробувати ще раз</button>
+      </div>
       <p class="model-note">Моделі й твої відео залишаються на цьому комп’ютері.</p>
     </div>
   </section>
@@ -48,6 +58,14 @@
     </section>
 
     <div id="projectWorkspace" class="hidden">
+      <nav id="projectActions" class="project-toolbar hidden" aria-label="Дії поточного проєкту">
+        <button id="closeProject" class="project-back">← ДО ПРОЄКТІВ</button>
+        <div class="project-toolbar-actions">
+          <button id="rescan">Оновити папку</button>
+          <button id="retranscribe" class="danger">Перерозпізнати все</button>
+          <button id="deleteProject" class="danger">Видалити проєкт</button>
+        </div>
+      </nav>
       <details id="queueProgress" class="queue-progress hidden" open>
       <summary><span class="section-index">02 / ОБРОБКА</span><strong id="queueSummary">Готую матеріали</strong><span class="queue-chevron" aria-hidden="true">⌄</span></summary>
       <div class="queue-body">
@@ -85,12 +103,6 @@
       <section class="workspace">
       <aside>
         <div class="section-title"><h2><small>04</small> Відео</h2><span id="videoCount">0</span></div>
-        <div id="projectActions" class="project-actions hidden">
-          <button id="closeProject">← До проєктів</button>
-          <button id="rescan">Оновити папку</button>
-          <button id="retranscribe" class="danger">Перерозпізнати все</button>
-          <button id="deleteProject" class="danger">Видалити проєкт</button>
-        </div>
         <div id="videoList" class="video-list"><p class="empty">Поки порожньо</p></div>
       </aside>
 

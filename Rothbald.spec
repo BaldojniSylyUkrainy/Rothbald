@@ -99,6 +99,7 @@ app = BUNDLE(
         "CFBundleDisplayName": "Rothbald",
         "CFBundleShortVersionString": version,
         "CFBundleVersion": version,
+        "LSMinimumSystemVersion": "13.5",
         "NSHighResolutionCapable": True,
     },
 ) if sys.platform == "darwin" else None

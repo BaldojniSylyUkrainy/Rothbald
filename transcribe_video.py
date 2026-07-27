@@ -7,6 +7,21 @@ import sys
 from pathlib import Path
 
 
+def resolve_faster_whisper_device(preference: str, cuda_count: int) -> tuple[str, int, str]:
+    preference = preference.lower()
+    if preference.startswith("cuda:"):
+        try:
+            device_index = int(preference.split(":", 1)[1])
+        except ValueError as exc:
+            raise RuntimeError("Некоректно збережений вибір NVIDIA GPU") from exc
+        if device_index < 0 or device_index >= cuda_count:
+            raise RuntimeError("Обрана NVIDIA GPU більше недоступна. Вибери Auto або CPU у Rothbald.")
+        return "cuda", device_index, "float16"
+    if preference == "auto" and cuda_count:
+        return "cuda", 0, "float16"
+    return "cpu", 0, "int8"
+
+
 def mlx_transcribe(input_path: Path, model: str) -> dict:
     import mlx_whisper
 
@@ -23,11 +38,19 @@ def mlx_transcribe(input_path: Path, model: str) -> dict:
 
 
 def faster_transcribe(input_path: Path, model: str) -> dict:
+    import ctranslate2
     from faster_whisper import WhisperModel
 
-    device = "cuda" if os.environ.get("ROTHBALD_CUDA") == "1" else "cpu"
-    compute_type = "float16" if device == "cuda" else "int8"
-    engine = WhisperModel(model, device=device, compute_type=compute_type, local_files_only=True)
+    preference = os.environ.get("ROTHBALD_DEVICE", "auto").lower()
+    cuda_count = max(0, int(ctranslate2.get_cuda_device_count()))
+    device, device_index, compute_type = resolve_faster_whisper_device(preference, cuda_count)
+    engine = WhisperModel(
+        model,
+        device=device,
+        device_index=device_index,
+        compute_type=compute_type,
+        local_files_only=True,
+    )
     segments, info = engine.transcribe(
         str(input_path),
         language="ru",

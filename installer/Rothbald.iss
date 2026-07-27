@@ -44,3 +44,56 @@ Name: "{autodesktop}\Rothbald"; Filename: "{app}\{#MyAppExeName}"; Tasks: deskto
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Запустити Rothbald"; Flags: nowait postinstall skipifsilent
+
+[Code]
+type
+  TMemoryStatusEx = record
+    dwLength: Cardinal;
+    dwMemoryLoad: Cardinal;
+    ullTotalPhys: Int64;
+    ullAvailPhys: Int64;
+    ullTotalPageFile: Int64;
+    ullAvailPageFile: Int64;
+    ullTotalVirtual: Int64;
+    ullAvailVirtual: Int64;
+    ullAvailExtendedVirtual: Int64;
+  end;
+
+function GlobalMemoryStatusEx(var Buffer: TMemoryStatusEx): Boolean;
+  external 'GlobalMemoryStatusEx@kernel32.dll stdcall';
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Memory: TMemoryStatusEx;
+  FreeBytes, TotalBytes: Int64;
+  DataPath: String;
+begin
+  Result := '';
+  Memory.dwLength := SizeOf(Memory);
+  if GlobalMemoryStatusEx(Memory) and (Memory.ullTotalPhys < Int64(8589934592)) then
+  begin
+    Result := 'Rothbald потребує щонайменше 8 ГБ оперативної пам''яті для локальних моделей. Встановлення зупинено.';
+    Exit;
+  end;
+
+  DataPath := ExpandConstant('{localappdata}');
+  if GetSpaceOnDisk64(DataPath, FreeBytes, TotalBytes) and (FreeBytes < Int64(12884901888)) then
+  begin
+    Result := 'Rothbald потребує щонайменше 12 ГБ вільного місця для застосунку, моделей і робочого кешу. Звільни місце та повтори встановлення.';
+    Exit;
+  end;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Cores: Integer;
+begin
+  Result := True;
+  if CurPageID <> wpReady then
+    Exit;
+  Cores := StrToIntDef(GetEnv('NUMBER_OF_PROCESSORS'), 0);
+  if (Cores > 0) and (Cores < 4) then
+    Result := MsgBox(
+      'Знайдено менше 4 логічних ядер. Rothbald встановиться, але QtWebEngine і локальне розпізнавання можуть працювати дуже повільно. Продовжити?',
+      mbConfirmation, MB_YESNO) = IDYES;
+end;

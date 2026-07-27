@@ -8,8 +8,11 @@ from pathlib import Path
 from unittest import mock
 
 import app_info
+import hardware_check
 import rothbald
 import server
+import transcribe_video
+from hardware_check import HardwarePreflight
 from model_manager import ModelManager
 
 
@@ -37,6 +40,60 @@ class ApplicationInfoTests(unittest.TestCase):
                 rothbald.os.environ["PATH"].split(rothbald.os.pathsep)[0],
                 str(Path("/app/runtime")),
             )
+
+
+class HardwarePreflightTests(unittest.TestCase):
+    def test_limited_machine_requires_confirmation_and_persists_device(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(hardware_check.sys, "platform", "win32"), \
+             mock.patch.object(hardware_check.platform, "machine", return_value="AMD64"), \
+             mock.patch.object(hardware_check, "_physical_memory", return_value=8 * hardware_check.GIB), \
+             mock.patch.object(hardware_check, "_cuda_device_count", return_value=0), \
+             mock.patch.object(hardware_check, "_nvidia_gpus", return_value=[]), \
+             mock.patch.object(hardware_check.shutil, "disk_usage", return_value=mock.Mock(free=30 * hardware_check.GIB)), \
+             mock.patch.object(hardware_check.os, "cpu_count", return_value=8):
+            checker = HardwarePreflight(Path(temporary))
+            report = checker.inspect()
+            self.assertEqual(report["performance"], "limited")
+            self.assertTrue(report["requires_confirmation"])
+            self.assertTrue(any("CPU" in warning for warning in report["warnings"]))
+            confirmed = checker.confirm("cpu")
+            self.assertTrue(confirmed["accepted"])
+            self.assertEqual(confirmed["selected_device"], "cpu")
+
+    def test_insufficient_memory_blocks_model_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(hardware_check.sys, "platform", "darwin"), \
+             mock.patch.object(hardware_check.platform, "machine", return_value="arm64"), \
+             mock.patch.object(hardware_check, "_physical_memory", return_value=4 * hardware_check.GIB), \
+             mock.patch.object(hardware_check.shutil, "disk_usage", return_value=mock.Mock(free=30 * hardware_check.GIB)), \
+             mock.patch.object(hardware_check.os, "cpu_count", return_value=8):
+            checker = HardwarePreflight(Path(temporary))
+            report = checker.inspect()
+            self.assertEqual(report["performance"], "blocked")
+            with self.assertRaises(ValueError):
+                checker.confirm("auto")
+
+    def test_windows_gpu_is_selectable_when_cuda_runtime_sees_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(hardware_check.sys, "platform", "win32"), \
+             mock.patch.object(hardware_check.platform, "machine", return_value="AMD64"), \
+             mock.patch.object(hardware_check, "_physical_memory", return_value=16 * hardware_check.GIB), \
+             mock.patch.object(hardware_check, "_cuda_device_count", return_value=1), \
+             mock.patch.object(hardware_check, "_nvidia_gpus", return_value=[{"index": 0, "name": "NVIDIA Test", "memory": 8 * hardware_check.GIB}]), \
+             mock.patch.object(hardware_check.shutil, "disk_usage", return_value=mock.Mock(free=30 * hardware_check.GIB)), \
+             mock.patch.object(hardware_check.os, "cpu_count", return_value=8):
+            checker = HardwarePreflight(Path(temporary))
+            report = checker.inspect()
+            self.assertTrue(any(device["key"] == "cuda:0" and device["available"] for device in report["devices"]))
+            self.assertTrue(checker.confirm("cuda:0")["accepted"])
+
+    def test_transcription_device_resolution_has_safe_cpu_fallback(self) -> None:
+        self.assertEqual(transcribe_video.resolve_faster_whisper_device("auto", 0), ("cpu", 0, "int8"))
+        self.assertEqual(transcribe_video.resolve_faster_whisper_device("auto", 2), ("cuda", 0, "float16"))
+        self.assertEqual(transcribe_video.resolve_faster_whisper_device("cuda:1", 2), ("cuda", 1, "float16"))
+        with self.assertRaises(RuntimeError):
+            transcribe_video.resolve_faster_whisper_device("cuda:3", 1)
 
 
 class TemporaryStorageTest(unittest.TestCase):

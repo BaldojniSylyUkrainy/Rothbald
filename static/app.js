@@ -103,6 +103,60 @@ function modelEta(seconds) {
   return `ще ≈ ${hours} год${rest ? ` ${rest} хв` : ''}`;
 }
 
+function hardwareSize(bytes) {
+  const value = Math.max(0, +bytes || 0);
+  return value ? `${(value / 1024 ** 3).toFixed(value < 10 * 1024 ** 3 ? 1 : 0)} ГБ` : 'невідомо';
+}
+
+function renderHardware(report) {
+  $('#hardwarePanel').classList.remove('hidden');
+  $('#modelProgress').classList.add('hidden');
+  $('#modelGateTitle').textContent = report.blockers.length ? 'Цей комп’ютер не відповідає вимогам' : 'Перевірка комп’ютера';
+  $('#modelGateCopy').textContent = report.blockers.length
+    ? 'Моделі не завантажуватимуться, доки критичну проблему не буде усунено.'
+    : report.warnings.length
+      ? 'Rothbald запуститься, але на цій конфігурації частина операцій може працювати повільніше.'
+      : 'Конфігурація підходить. Обери пристрій для розпізнавання перед завантаженням моделей.';
+  $('#hardwareStats').innerHTML = `
+    <div class="hardware-stat"><small>Система</small><strong>${esc(report.platform_label)}</strong></div>
+    <div class="hardware-stat"><small>Пам’ять</small><strong>${hardwareSize(report.ram_bytes)}</strong></div>
+    <div class="hardware-stat"><small>Вільне місце</small><strong>${hardwareSize(report.disk_free_bytes)}</strong></div>`;
+  const messages = [
+    ...(report.blockers || []).map(message => ({type: 'blocker', message})),
+    ...(report.warnings || []).map(message => ({type: 'warning', message})),
+  ];
+  $('#hardwareMessages').innerHTML = messages.length
+    ? messages.map(item => `<p class="hardware-message ${item.type}">${esc(item.message)}</p>`).join('')
+    : '<p class="hardware-message">✓ Пам’яті, місця на диску й обчислювальних ресурсів достатньо.</p>';
+  const select = $('#hardwareDevice');
+  select.innerHTML = (report.devices || []).map(device =>
+    `<option value="${esc(device.key)}" ${device.key === report.selected_device ? 'selected' : ''} ${device.available ? '' : 'disabled'}>${esc(device.label)}</option>`
+  ).join('');
+  select.disabled = Boolean(report.blockers.length);
+  $('#confirmHardware').classList.toggle('hidden', Boolean(report.blockers.length));
+  $('#recheckHardware').classList.toggle('hidden', !report.blockers.length);
+}
+
+async function confirmHardware() {
+  const button = $('#confirmHardware');
+  button.disabled = true;
+  button.textContent = 'Зберігаю вибір…';
+  try {
+    await api('/api/hardware/confirm', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({device: $('#hardwareDevice').value}),
+    });
+    $('#hardwarePanel').classList.add('hidden');
+    $('#modelProgress').classList.remove('hidden');
+    await bootstrapModels();
+  } catch (error) {
+    toast(error.message);
+    button.disabled = false;
+    button.textContent = 'Підтвердити й підготувати моделі';
+  }
+}
+
 function renderModelGate(status) {
   const percent = Math.max(0, Math.min(100, Math.round(+status.percent || 0)));
   $('#modelTotalFill').style.width = `${percent}%`;
@@ -142,6 +196,13 @@ function renderModelGate(status) {
 async function bootstrapModels(retry = false) {
   const gate = $('#modelGate');
   try {
+    const hardware = await api('/api/hardware');
+    if (hardware.requires_confirmation) {
+      renderHardware(hardware);
+      return;
+    }
+    $('#hardwarePanel').classList.add('hidden');
+    $('#modelProgress').classList.remove('hidden');
     let status = await api('/api/bootstrap');
     if (status.status === 'idle' || retry) {
       status = await api('/api/bootstrap/start', { method: 'POST' });
@@ -196,7 +257,7 @@ function renderProjectHome() {
         <span class="project-copy"><strong>${esc(project.name)}</strong><span class="project-path" title="${esc(project.path)}">${esc(project.path)}</span><span class="project-meta">${status}${missing && !unavailable ? ` · немає файлів: ${missing}` : ''} · ${recentDate(project.last_opened_at)}</span></span>
       </button>
       <button class="locate" data-locate-project="${project.id}">Locate</button>
-      <button class="project-delete" data-delete-project="${project.id}" title="Видалити локальний проєкт">×</button>
+      <button class="project-delete" data-delete-project="${project.id}" title="Видалити локальний проєкт">Видалити</button>
     </article>`;
   }).join('');
 }
@@ -720,5 +781,7 @@ $('#resultTabs').addEventListener('click', event => {
 $('#searchButton').addEventListener('click', search);
 searchInput.addEventListener('keydown', event => { if (event.key === 'Enter') search(); });
 $('#retryModels').addEventListener('click', () => bootstrapModels(true));
+$('#confirmHardware').addEventListener('click', confirmHardware);
+$('#recheckHardware').addEventListener('click', () => bootstrapModels());
 loadAppInfo();
 bootstrapModels();

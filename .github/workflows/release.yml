@@ -49,7 +49,7 @@ jobs:
         shell: bash
         run: |
           python scripts/prepare_build.py
-          python -m py_compile app_info.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py
+          python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py
           node --check static/app.js
           python -m unittest discover -s tests -v
       - name: Build Windows application
@@ -115,7 +115,7 @@ jobs:
       - name: Verify source and tests
         run: |
           python scripts/prepare_build.py
-          python -m py_compile app_info.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py
+          python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py
           node --check static/app.js
           python -m unittest discover -s tests -v
       - name: Import Developer ID certificate
