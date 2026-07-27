@@ -4,7 +4,7 @@ Rothbald повторює безпечний релізний принцип `yt
 а публічний реліз запускається лише вручну через `.github/workflows/release.yml`.
 Workflow:
 
-- перевіряє і збирає Windows x64;
+- перевіряє і збирає звичайний Windows x64 `setup.exe` через Inno Setup;
 - перевіряє, підписує Developer ID, нотаризує й stapling-перевіряє macOS Apple Silicon;
 - формує `latest.json` і `SHA256SUMS.txt`;
 - створює **draft** GitHub Release та ніколи не публікує його автоматично.
@@ -69,7 +69,7 @@ Apple secrets можна зберегти на repository або environment р�
 однакову назву на обох рівнях. Variable рекомендовано зберігати в environment.
 
 Rothbald не використовує `TAURI_SIGNING_PRIVATE_KEY`: Tauri `.sig` підписує
-тільки Tauri updater payload, а Rothbald є PyInstaller/pywebview застосунком.
+тільки Tauri updater payload, а Rothbald є PyInstaller/PySide6 застосунком.
 Механічне використання цього ключа не дало б жодної перевірки під час запуску.
 
 ## 5. Запуск релізу
@@ -90,17 +90,17 @@ Developer ID signature/hardened runtime/timestamp, Apple notarization не ма�
 
 - `Rothbald_<version>_aarch64.dmg`;
 - `Rothbald_<version>_aarch64.zip`;
-- `Rothbald_<version>_windows-x86_64.zip`;
+- `Rothbald_<version>_windows-x86_64-setup.exe`;
 - `latest.json`;
 - `SHA256SUMS.txt`.
 
-За можливості встановіть `.dmg` і Windows archive на чистих машинах, після чого
+За можливості встановіть `.dmg` і Windows installer на чистих машинах, після чого
 натисніть **Publish release**. До цього draft не змінює `/releases/latest`.
 
 ## Windows SmartScreen
 
 Як і в `yt-dlp-BD`, Tauri updater signature не є Windows Authenticode. У
-Rothbald Tauri updater відсутній, тому Windows archive має SHA-256 integrity у
+Rothbald Tauri updater відсутній, тому Windows installer має SHA-256 integrity у
 release manifest, але без окремого Authenticode certificate Windows може
 показувати `Unknown publisher`. Прибрати це можна лише окремим Windows
 code-signing certificate.

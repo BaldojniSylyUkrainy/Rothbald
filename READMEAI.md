@@ -1,6 +1,6 @@
 # READMEAI — project memory for Codex
 
-Last updated: 2026-07-26
+Last updated: 2026-07-27
 
 This file is the authoritative technical memory for the local video-search application. Read it completely before diagnosing or modifying the app. After every material change, update the affected sections and append a dated changelog entry.
 
@@ -21,11 +21,11 @@ Selecting a video only controls the player. It must never narrow the search scop
 
 - Apple Silicon uses `mlx-whisper` and is the primary optimized target.
 - Windows x64 uses `faster-whisper` Turbo on CPU/int8 by default. `ROTHBALD_CUDA=1` opts into CUDA/float16 when the machine has a compatible runtime.
-- Source launches require `ffmpeg` and `ffprobe`; packaged builds include both binaries.
+- Source launches require `ffmpeg` and `ffprobe`; packaged builds include the Python runtime, PySide6/QtWebEngine, both media binaries, and all backend dependencies.
 - Python virtual environment: `.venv/`.
 - Local URL: `http://127.0.0.1:8765`.
-- The local URL is an internal transport only. `rothbald.py` presents it inside a dedicated pywebview desktop window: WKWebView/Cocoa on macOS and WebView2/WinForms on Windows. Packaged users do not interact with an external browser.
-- macOS source launch uses `start.command` / `setup.command`; Windows uses `start.bat` / `setup.ps1`.
+- The local URL is an internal transport only. `rothbald.py` presents it in a dedicated native PySide6 window through QtWebEngine. Packaged users do not interact with an external browser and never install a web runtime separately.
+- `start.command` / `setup.command` and `start.bat` / `setup.ps1` are developer-only source helpers. End users install a signed/notarized DMG on Apple Silicon or the Windows setup executable and need no Python, PowerShell, ffmpeg, terminal, or browser.
 - `start.command` runs the server under `/usr/bin/caffeinate -i`: idle system sleep is prevented for the lifetime of the app, while display sleep and screen locking remain allowed. Active transcription keeps the source disk in use.
 - Packaged builds store generated data under Application Support on macOS and LocalAppData on Windows. Source launches retain the repository-local `data/` behavior.
 - No VPS or automatic internet video downloading is in scope for this version.
@@ -36,7 +36,7 @@ Selecting a video only controls the player. It must never narrow the search scop
 - `transcribe_video.py` — isolated MLX Whisper transcription subprocess.
 - `prepare_models.py` / `prepare_semantic.py` — download and verify the Whisper and semantic models during setup.
 - `model_manager.py` — platform model manifest, remote revision check, resilient local verification, exact byte progress, and background downloads for the startup gate.
-- `rothbald.py` / `Rothbald.spec` — native desktop-window launcher and PyInstaller definition.
+- `rothbald.py` / `Rothbald.spec` — PySide6/QtWebEngine native desktop-window launcher and self-contained PyInstaller definition.
 - `assets/app-icon.png`, `.icns`, and `.ico` — rounded `Ro` application icon derived from the same Bradley Hand wordmark used by the UI.
 - `static/index.html` — application markup.
 - `static/app.js` — client state, queue progress, search tabs, video selection, and project actions.
@@ -46,7 +46,7 @@ Selecting a video only controls the player. It must never narrow the search scop
 - `app_info.py` and `scripts/prepare_build.py` — runtime build metadata and deterministic platform version resources.
 - `.github/workflows/release.yml` — manual gated signed/notarized draft-release pipeline.
 - `tests/test_server.py` — standard-library regression tests for migrations, queue claiming, matching, ranges, and chunk checkpoints.
-- `README.md` — user-facing setup and usage.
+- `README.md` — user-facing installation and usage; `docs/DEVELOPMENT_UK.md` keeps source-only setup separate.
 
 ## Runtime architecture
 
@@ -83,7 +83,7 @@ Important resource decision: semantic embeddings must run on CPU. Do not move th
 ### Model bootstrap and updates
 
 - The HTTP server starts before models are ready so the UI can show the model gate.
-- `GET /api/bootstrap` exposes overall status plus separate speech/meaning byte totals, downloaded bytes, percentages, current file, and errors.
+- `GET /api/bootstrap` exposes overall status plus separate speech/meaning byte totals, downloaded bytes, percentages, transfer speed, estimated time remaining, current file, and errors.
 - `POST /api/bootstrap/start` starts or retries the background check.
 - Every launch verifies local snapshots and checks the current Hugging Face revision when online. A changed revision downloads through the same progress UI and updates `model-manifest.json` only after both model snapshots verify.
 - First launch requires the network. Later launches may proceed offline when both local snapshots are intact.
@@ -257,8 +257,8 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 ## Packaging status
 
 - Native CI bundles are prepared through PyInstaller and GitHub Actions; the manual release path additionally signs and notarizes Apple Silicon.
-- The bundle opens as a standalone desktop window through pywebview, not as a browser tab. PyInstaller embeds the platform-specific Dock/executable icon.
-- Model updates are checked in-app against published Hugging Face revisions and downloaded with exact byte progress.
+- The bundle opens as a standalone PySide6/QtWebEngine desktop window, not as a browser tab. PyInstaller embeds the platform-specific Dock/executable icon.
+- Model updates are checked in-app against published Hugging Face revisions and downloaded with exact byte progress, speed, and ETA.
 - Draft GitHub Release hosting, embedded build identity, macOS Developer ID signing/notarization, and cross-platform SHA-256 manifests are implemented. Automatic binary updates and Windows Authenticode still require a separate product decision/certificate.
 
 ## Changelog
@@ -270,9 +270,14 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 - Added a manual-only protected release workflow modeled on `yt-dlp BD`: Windows x64 verification, Apple Silicon Developer ID signing, hardened runtime, notarization, stapling, Gatekeeper validation, checksums, `latest.json`, and draft GitHub Release assembly.
 - Added owner handoff and Apple credential documentation. Tauri updater keys are intentionally not reused because Rothbald is a PyInstaller application and cannot verify Tauri updater signatures.
 
+- Replaced the development-oriented pywebview shell with PySide6 and QtWebEngine. The existing HTML/CSS interface remains unchanged inside a real cross-platform desktop window, while the native folder picker is safely bridged from backend request threads to the Qt main thread.
+- Changed the release contract to an installable product: Apple Silicon ships through the signed/notarized DMG and Windows x64 through an Inno Setup executable. Both package the Python runtime, Qt, backend dependencies, ffmpeg, and ffprobe; end users do not install developer tools or open a browser.
+- Added download speed and ETA to first-launch and model-update progress, updated regression coverage, separated developer source setup into `docs/DEVELOPMENT_UK.md`, and made the main README installation-only.
+- Added packaged-runtime PATH setup for bundled ffmpeg/ffprobe and a local `Application Support/Rothbald/crash.log` for otherwise silent windowed-launch failures. A real frozen Apple Silicon smoke test loaded MLX Whisper, processed a WAV, and wrote its transcript JSON without relying on a system Python or ffmpeg.
+
 ### 2026-07-26
 
-- Replaced the browser-launching packaged shell with a standalone pywebview window sized for 13-inch screens (1280×800, 960×640 minimum), using WKWebView on macOS and WebView2 on Windows.
+- Replaced the browser-launching packaged shell with a standalone desktop window sized for 13-inch screens (1280×800, 960×640 minimum).
 - Reworked the UI into a predominantly monochrome Helvetica system using black, graphite, neutral gray, and white. Low-saturation pastel violet marks important numbers, indices, focus, selection, live progress, result markers, and functional card separators; pastel green is reserved for completion, while pastel red is reserved for destructive actions, errors, and unavailable media. Increased section, card, metadata, search, and player-caption spacing for dense text-heavy projects. Search remains prominent through structure and scale, and the completed-processing panel stays auto-collapsing and manually expandable.
 - Replaced the generated single-letter icon with a deterministic black rounded `Ro` icon using a large white Bradley Hand mark; calibrated its transparent canvas for standard Dock sizing and added reproducible PNG, ICNS, ICO, favicon, and PyInstaller wiring.
 - Replaced the home headline with a concise product explanation and capability list; removed SSD-specific language from all user-facing UI because project media may live on any accessible storage.

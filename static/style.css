@@ -85,6 +85,8 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .model-total { margin-top: 42px; }
 .model-total-head, .model-row-head { display: flex; justify-content: space-between; gap: 18px; margin-bottom: 8px; }
 .model-total-head strong, .model-row-head strong { color: var(--signal); font-variant-numeric: tabular-nums; }
+.model-total-status { display: flex; align-items: baseline; gap: 12px; }
+#modelEta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .model-track { height: 16px; overflow: hidden; border: 1px solid var(--paper); background: transparent; }
 .model-track > div { width: 0; height: 100%; background: var(--signal); transition: width .25s ease; }
 .model-rows { display: grid; gap: 18px; margin-top: 28px; }

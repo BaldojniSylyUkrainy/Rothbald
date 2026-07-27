@@ -92,17 +92,31 @@ function modelBytes(value) {
   return `${(bytes / 1024 ** 3).toFixed(1)} ГБ`;
 }
 
+function modelEta(seconds) {
+  const value = Math.max(0, Math.round(+seconds || 0));
+  if (!value) return '';
+  if (value < 60) return `ще ≈ ${value} с`;
+  const minutes = Math.ceil(value / 60);
+  if (minutes < 60) return `ще ≈ ${minutes} хв`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return `ще ≈ ${hours} год${rest ? ` ${rest} хв` : ''}`;
+}
+
 function renderModelGate(status) {
   const percent = Math.max(0, Math.min(100, Math.round(+status.percent || 0)));
   $('#modelTotalFill').style.width = `${percent}%`;
   $('#modelTotalPercent').textContent = `${percent}%`;
   $('#modelTotalTrack').setAttribute('aria-valuenow', percent);
   $('#modelPhase').textContent = status.phase || 'Перевірка';
+  $('#modelEta').textContent = status.status === 'downloading' ? modelEta(status.eta_seconds) : '';
   $('#modelRows').innerHTML = (status.models || []).map(model => {
     const modelPercent = Math.max(0, Math.min(100, Math.round(+model.percent || 0)));
-    const amount = model.total > 100
+    let amount = model.total > 100
       ? `${modelBytes(model.downloaded)} / ${modelBytes(model.total)}`
       : model.detail;
+    const eta = model.status === 'downloading' ? modelEta(model.eta_seconds) : '';
+    if (eta) amount += ` · ${eta}`;
     return `<div class="model-row">
       <div class="model-row-head"><span><strong>${esc(model.label)}</strong><br><small>${esc(amount || '')}</small></span><strong>${modelPercent}%</strong></div>
       <div class="model-track" role="progressbar" aria-label="${esc(model.label)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${modelPercent}"><div style="width:${modelPercent}%"></div></div>

@@ -41,8 +41,8 @@ jobs:
             throw "Requested tag must be v$version"
           }
           "ROTHBALD_BUILD_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
-      - name: Install ffmpeg
-        run: choco install ffmpeg --no-progress -y
+      - name: Install bundled runtime tools
+        run: choco install ffmpeg innosetup --no-progress -y
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt -r requirements-build.txt
       - name: Verify source and tests
@@ -54,15 +54,26 @@ jobs:
           python -m unittest discover -s tests -v
       - name: Build Windows application
         run: pyinstaller --noconfirm Rothbald.spec
-      - name: Archive and verify Windows application
+      - name: Build and verify Windows installer
         shell: pwsh
         run: |
           $version = (Get-Content -Raw VERSION).Trim()
           if (!(Test-Path -LiteralPath "dist/Rothbald/Rothbald.exe")) {
             throw "PyInstaller did not create Rothbald.exe"
           }
-          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
-          Compress-Archive -Path dist\Rothbald -DestinationPath "release-assets/Rothbald_${version}_windows-x86_64.zip"
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path -LiteralPath $iscc)) {
+            $iscc = "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          }
+          if (!(Test-Path -LiteralPath $iscc)) {
+            throw "Inno Setup compiler not found"
+          }
+          & $iscc "/DMyAppVersion=$version" "installer\Rothbald.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+          $installer = "release-assets/Rothbald_${version}_windows-x86_64-setup.exe"
+          if (!(Test-Path -LiteralPath $installer) -or (Get-Item $installer).Length -eq 0) {
+            throw "Windows installer is missing or empty"
+          }
       - uses: actions/upload-artifact@v6
         with:
           name: release-windows

@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -60,6 +61,8 @@ class ModelManager:
             "percent": 0,
             "error": None,
             "offline": False,
+            "eta_seconds": None,
+            "bytes_per_second": 0,
             "models": [
                 {
                     "key": spec.key,
@@ -70,6 +73,8 @@ class ModelManager:
                     "downloaded": 0,
                     "total": 0,
                     "detail": "Очікує перевірки",
+                    "eta_seconds": None,
+                    "bytes_per_second": 0,
                 }
                 for spec in MODEL_SPECS
             ],
@@ -113,6 +118,9 @@ class ModelManager:
                 for item, total in zip(self._state["models"], totals)
             ]
             self._state["percent"] = min(100, round(sum(completed) / sum(totals) * 100))
+            active = next((item for item in self._state["models"] if item["status"] == "downloading"), None)
+            self._state["eta_seconds"] = active.get("eta_seconds") if active else None
+            self._state["bytes_per_second"] = active.get("bytes_per_second", 0) if active else 0
 
     @staticmethod
     def _matches(filename: str, patterns: tuple[str, ...]) -> bool:
@@ -166,6 +174,7 @@ class ModelManager:
         expected_size: int,
         base_downloaded: int,
         total: int,
+        download_started_at: float,
     ) -> None:
         from huggingface_hub import hf_hub_download
         from tqdm.auto import tqdm
@@ -176,10 +185,16 @@ class ModelManager:
             def update(self, amount=1):
                 result = super().update(amount)
                 current = min(expected_size, int(getattr(self, "n", 0)))
+                downloaded = min(total, base_downloaded + current)
+                elapsed = max(0.1, time.monotonic() - download_started_at)
+                speed = downloaded / elapsed
+                remaining = max(0, total - downloaded)
                 manager._set_model(
                     spec.key,
-                    downloaded=min(total, base_downloaded + current),
-                    percent=round(min(total, base_downloaded + current) / max(1, total) * 100),
+                    downloaded=downloaded,
+                    percent=round(downloaded / max(1, total) * 100),
+                    bytes_per_second=round(speed),
+                    eta_seconds=round(remaining / speed) if speed > 0 and downloaded > 0 else None,
                 )
                 return result
 
@@ -228,12 +243,12 @@ class ModelManager:
                 if not needs_download:
                     self._set_model(
                         spec.key, status="ready", percent=100, downloaded=100, total=100,
-                        detail="Актуальна версія вже на комп’ютері",
+                        detail="Актуальна версія вже на комп’ютері", eta_seconds=0, bytes_per_second=0,
                     )
                 elif not files:
                     self._set_model(
                         spec.key, status="ready", percent=100, downloaded=100, total=100,
-                        detail="Локальна версія готова · перевірка онлайн недоступна",
+                        detail="Локальна версія готова · перевірка онлайн недоступна", eta_seconds=0, bytes_per_second=0,
                     )
                 else:
                     total = max(1, sum(size for _, size in files))
@@ -243,12 +258,15 @@ class ModelManager:
                     )
                     self._set_model(
                         spec.key, status="downloading", total=total, downloaded=0, percent=0,
-                        detail="Завантаження файлів моделі",
+                        detail="Завантаження файлів моделі", eta_seconds=None, bytes_per_second=0,
                     )
                     completed = 0
+                    download_started_at = time.monotonic()
                     for filename, size in files:
                         self._set_model(spec.key, detail=f"Файл: {Path(filename).name}")
-                        self._download_file(spec, filename, revision, size, completed, total)
+                        self._download_file(
+                            spec, filename, revision, size, completed, total, download_started_at
+                        )
                         completed += size
                         self._set_model(
                             spec.key,
@@ -259,13 +277,16 @@ class ModelManager:
                         raise RuntimeError(f"Не вдалося перевірити завантажену модель {spec.label}")
                     self._set_model(
                         spec.key, status="ready", percent=100, downloaded=total,
-                        detail="Готова до роботи",
+                        detail="Готова до роботи", eta_seconds=0, bytes_per_second=0,
                     )
                 next_manifest["models"][spec.key] = {"repo": spec.repo_id, "revision": revision}
 
             if remote_available:
                 self._save_manifest(next_manifest)
-            self._set(status="ready", phase="Усе готово", percent=100, error=None)
+            self._set(
+                status="ready", phase="Усе готово", percent=100, error=None,
+                eta_seconds=0, bytes_per_second=0,
+            )
         except Exception as exc:
             self._set(status="error", phase="Потрібна увага", error=str(exc))
 

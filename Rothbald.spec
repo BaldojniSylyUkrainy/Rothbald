@@ -5,7 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 
 version = Path("VERSION").read_text(encoding="utf-8").strip()
@@ -23,13 +23,29 @@ datas = [
 binaries = []
 hiddenimports = []
 
-packages = ["huggingface_hub", "transformers", "tokenizers", "torch", "numpy", "scipy", "webview"]
-packages += ["faster_whisper", "ctranslate2"] if sys.platform == "win32" else ["mlx", "mlx_whisper"]
-for package in packages:
-    package_datas, package_binaries, package_hidden = collect_all(package)
-    datas += package_datas
-    binaries += package_binaries
-    hiddenimports += package_hidden
+if sys.platform == "darwin":
+    # collect_all() probes every MLX submodule in an isolated process. Some
+    # utility modules initialize Metal while merely being imported, which can
+    # abort a headless CI build. Static analysis finds the runtime imports; copy
+    # only the assets and native libraries here without executing MLX.
+    datas += collect_data_files("mlx") + collect_data_files("mlx_whisper")
+    binaries += collect_dynamic_libs("mlx")
+hiddenimports += [
+    "mlx._reprlib_fix",
+    "mlx.extension",
+    "mlx.utils",
+    "mlx.nn",
+    "mlx.nn.init",
+    "mlx.nn.losses",
+    "mlx.nn.utils",
+    "transformers.models.xlm_roberta.modeling_xlm_roberta",
+    "transformers.models.xlm_roberta.tokenization_xlm_roberta_fast",
+    "PySide6.QtCore",
+    "PySide6.QtGui",
+    "PySide6.QtWidgets",
+    "PySide6.QtWebEngineCore",
+    "PySide6.QtWebEngineWidgets",
+]
 
 for executable in ("ffmpeg", "ffprobe"):
     path = shutil.which(executable)
@@ -45,7 +61,7 @@ a = Analysis(
     hookspath=[],
     runtime_hooks=[],
     excludes=(
-        ["PyQt5", "PyQt6", "PySide2", "PySide6", "gi"]
+        ["PyQt5", "PyQt6", "PySide2", "gi", "webview"]
         if sys.platform in {"darwin", "win32"} else []
     ),
     noarchive=False,

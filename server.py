@@ -77,6 +77,7 @@ active_processes: dict[str, subprocess.Popen] = {}
 interrupt_reasons: dict[str, str] = {}
 _embedder = None
 model_manager = get_model_manager(DATA_DIR)
+folder_picker_callback = None
 
 
 class JobInterrupted(RuntimeError):
@@ -622,6 +623,8 @@ def file_fingerprint(path: Path) -> str:
 
 
 def choose_folder_dialog(prompt: str) -> Path | None:
+    if folder_picker_callback is not None:
+        return folder_picker_callback(prompt)
     if sys.platform == "darwin":
         safe_prompt = prompt.replace("\\", "\\\\").replace('"', '\\"')
         result = subprocess.run(
@@ -644,6 +647,11 @@ def choose_folder_dialog(prompt: str) -> Path | None:
             root.destroy()
         return Path(selection).resolve() if selection else None
     raise RuntimeError("Системний вибір папки підтримується лише на macOS та Windows")
+
+
+def set_folder_picker(callback) -> None:
+    global folder_picker_callback
+    folder_picker_callback = callback
 
 
 def bundled_tool(name: str) -> str:

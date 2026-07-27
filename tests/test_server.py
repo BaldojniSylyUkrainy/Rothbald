@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 import app_info
+import rothbald
 import server
 from model_manager import ModelManager
 
@@ -26,6 +27,13 @@ class ApplicationInfoTests(unittest.TestCase):
             self.assertEqual(info["version"], "1.2.3.4")
             self.assertEqual(info["commit"], "abcdef123456")
             self.assertEqual(info["channel"], "release")
+
+    def test_frozen_launcher_exposes_bundled_tools_on_path(self) -> None:
+        with mock.patch.object(rothbald.sys, "frozen", True, create=True), \
+             mock.patch.object(rothbald, "application_root", return_value=Path("/app/runtime")), \
+             mock.patch.dict(rothbald.os.environ, {"PATH": "/usr/bin"}, clear=False):
+            rothbald.configure_bundled_tools()
+            self.assertEqual(rothbald.os.environ["PATH"].split(rothbald.os.pathsep)[0], "/app/runtime")
 
 
 class TemporaryStorageTest(unittest.TestCase):
@@ -215,10 +223,20 @@ class ModelBootstrapTests(unittest.TestCase):
     def test_progress_snapshot_is_weighted_and_detached(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = ModelManager(Path(directory))
-            manager._set_model("speech", status="downloading", downloaded=50, total=100, percent=50)
+            manager._set_model(
+                "speech",
+                status="downloading",
+                downloaded=50,
+                total=100,
+                percent=50,
+                eta_seconds=10,
+                bytes_per_second=5,
+            )
             manager._set_model("meaning", status="downloading", downloaded=0, total=300, percent=0)
             snapshot = manager.snapshot()
             self.assertEqual(snapshot["percent"], 12)
+            self.assertEqual(snapshot["eta_seconds"], 10)
+            self.assertEqual(snapshot["bytes_per_second"], 5)
             snapshot["models"][0]["percent"] = 99
             self.assertEqual(manager.snapshot()["models"][0]["percent"], 50)
 
