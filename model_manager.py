@@ -8,7 +8,6 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 
 IS_WINDOWS = sys.platform == "win32"

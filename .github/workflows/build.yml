@@ -14,14 +14,19 @@ jobs:
   test:
     env:
       ROTHBALD_BUILD_CHANNEL: ci
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.os == 'macos-15' && '14.0' || '' }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-15
+            lockfile: requirements-macos.lock
+            build_lockfile: requirements-build-macos.lock
             artifact: Rothbald-Apple-Silicon
             artifact_path: Rothbald-Apple-Silicon.zip
           - os: windows-latest
+            lockfile: requirements-windows.lock
+            build_lockfile: requirements-build-windows.lock
             artifact: Rothbald-Windows-x64
             artifact_path: release-assets/Rothbald_*_windows-x86_64-setup.exe
     runs-on: ${{ matrix.os }}
@@ -31,6 +36,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: |
+            ${{ matrix.lockfile }}
+            ${{ matrix.build_lockfile }}
       - name: Install ffmpeg on macOS
         if: runner.os == 'macOS'
         run: brew install ffmpeg
@@ -38,7 +46,7 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install ffmpeg innosetup --no-progress -y
       - name: Install Python dependencies
-        run: python -m pip install -r requirements.txt -r requirements-build.txt
+        run: python -m pip install -r ${{ matrix.lockfile }} -r ${{ matrix.build_lockfile }}
       - name: Verify source and tests
         shell: bash
         run: |

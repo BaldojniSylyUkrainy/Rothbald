@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import errno
 import os
-import threading
-import time
-import traceback
-import urllib.request
 import sys
+import threading
+import traceback
 import uuid
 from pathlib import Path
 
@@ -33,15 +32,20 @@ def main() -> None:
         transcribe_video.main()
         return
     url = f"http://{server.HOST}:{server.PORT}"
-    threading.Thread(target=server.main, daemon=True, name="rothbald-server").start()
-    for _ in range(120):
-        try:
-            with urllib.request.urlopen(f"{url}/api/bootstrap", timeout=.5):
-                break
-        except Exception:
-            time.sleep(.1)
-    else:
-        raise RuntimeError("Rothbald не зміг запустити локальний двигун")
+    try:
+        http_server = server.create_http_server()
+    except OSError as exc:
+        if exc.errno in {errno.EADDRINUSE, 10048}:
+            raise RuntimeError(
+                f"Rothbald уже запущений або локальний порт {server.PORT} зайнятий іншою програмою"
+            ) from exc
+        raise
+    server_thread = threading.Thread(
+        target=http_server.serve_forever,
+        daemon=True,
+        name="rothbald-server",
+    )
+    server_thread.start()
 
     from PySide6.QtCore import QObject, QUrl, Signal, Slot
     from PySide6.QtGui import QDesktopServices, QIcon
@@ -110,7 +114,13 @@ def main() -> None:
     server.set_folder_picker(picker.choose)
     window = RothbaldWindow()
     window.show()
-    raise SystemExit(qt_app.exec())
+    try:
+        exit_code = qt_app.exec()
+    finally:
+        http_server.shutdown()
+        http_server.server_close()
+        server_thread.join(timeout=2)
+    raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

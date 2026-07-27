@@ -39,7 +39,7 @@ hiddenimports += [
     "mlx.nn.losses",
     "mlx.nn.utils",
     "transformers.models.xlm_roberta.modeling_xlm_roberta",
-    "transformers.models.xlm_roberta.tokenization_xlm_roberta_fast",
+    "transformers.models.xlm_roberta.tokenization_xlm_roberta",
     "PySide6.QtCore",
     "PySide6.QtGui",
     "PySide6.QtWidgets",
@@ -99,7 +99,7 @@ app = BUNDLE(
         "CFBundleDisplayName": "Rothbald",
         "CFBundleShortVersionString": version,
         "CFBundleVersion": version,
-        "LSMinimumSystemVersion": "13.5",
+        "LSMinimumSystemVersion": "14.0",
         "NSHighResolutionCapable": True,
     },
 ) if sys.platform == "darwin" else None

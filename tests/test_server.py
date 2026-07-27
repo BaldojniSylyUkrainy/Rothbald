@@ -16,6 +16,20 @@ from hardware_check import HardwarePreflight
 from model_manager import ModelManager
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def locked_versions(path: Path) -> dict[str, str]:
+    result = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "==" not in line:
+            continue
+        name, version = line.split("==", 1)
+        result[name.lower().replace("_", "-")] = version
+    return result
+
+
 class ApplicationInfoTests(unittest.TestCase):
     def test_embedded_build_metadata_is_preferred(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -73,6 +87,18 @@ class HardwarePreflightTests(unittest.TestCase):
             self.assertEqual(report["performance"], "blocked")
             with self.assertRaises(ValueError):
                 checker.confirm("auto")
+
+    def test_macos_ventura_is_blocked_by_packaged_torch_requirement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(hardware_check.sys, "platform", "darwin"), \
+             mock.patch.object(hardware_check.platform, "machine", return_value="arm64"), \
+             mock.patch.object(hardware_check.platform, "mac_ver", return_value=("13.6.9", ("", "", ""), "")), \
+             mock.patch.object(hardware_check, "_physical_memory", return_value=16 * hardware_check.GIB), \
+             mock.patch.object(hardware_check.shutil, "disk_usage", return_value=mock.Mock(free=30 * hardware_check.GIB)), \
+             mock.patch.object(hardware_check.os, "cpu_count", return_value=8):
+            report = HardwarePreflight(Path(temporary)).inspect()
+        self.assertEqual(report["performance"], "blocked")
+        self.assertTrue(any("macOS 14.0" in blocker for blocker in report["blockers"]))
 
     def test_windows_gpu_is_selectable_when_cuda_runtime_sees_it(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, \
@@ -187,6 +213,89 @@ class MigrationTests(TemporaryStorageTest):
 
 
 class QueueTests(TemporaryStorageTest):
+    def test_rescan_preserves_searchable_transcript_until_replacement_succeeds(self) -> None:
+        project_id, video_id = self.add_project_and_video(paused=0)
+        source = self.root / "one.mp4"
+        source.write_bytes(b"0123456789")
+        first_fingerprint = server.file_fingerprint(source)
+        transcript = server.TRANSCRIPT_DIR / f"{video_id}.json"
+        server.TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+        transcript.write_text('{"segments":[{"text":"старий текст"}]}', encoding="utf-8")
+        with server.db() as connection:
+            connection.execute(
+                """UPDATE videos SET status='done',progress=1,content_fingerprint=?,
+                   semantic_status='ready',semantic_progress=1,
+                   transcript_revision=1,semantic_revision=1 WHERE id=?""",
+                (first_fingerprint, video_id),
+            )
+            cursor = connection.execute(
+                """INSERT INTO segments(video_id,start,end,text,normalized)
+                   VALUES (?,?,?,?,?)""",
+                (video_id, 0, 1, "старий текст", server.normalize("старий текст")),
+            )
+            connection.execute(
+                "INSERT INTO segment_terms(segment_id,term) VALUES (?,?)",
+                (cursor.lastrowid, server.normalize("старий")),
+            )
+            connection.execute(
+                """INSERT INTO semantic_chunks(
+                       video_id,start,end,text,embedding,model,transcript_revision
+                   ) VALUES (?,?,?,?,?,?,?)""",
+                (
+                    video_id,
+                    0,
+                    1,
+                    "старий текст для збереження індексу",
+                    b"\0" * (server.EMBEDDING_DIMENSION * 4),
+                    server.SEMANTIC_INDEX_ID,
+                    1,
+                ),
+            )
+
+        source.write_bytes(b"abcdefghij")
+        with mock.patch.object(server, "media_duration", return_value=10):
+            self.assertEqual(server.scan_project(project_id), 1)
+
+        with server.db() as connection:
+            video = connection.execute("SELECT * FROM videos WHERE id=?", (video_id,)).fetchone()
+            self.assertEqual(video["status"], "queued")
+            self.assertEqual(video["semantic_status"], "ready")
+            self.assertEqual(video["transcript_revision"], 1)
+            self.assertEqual(video["semantic_revision"], 1)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM segments WHERE video_id=?", (video_id,)
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM semantic_chunks WHERE video_id=?", (video_id,)
+                ).fetchone()[0],
+                1,
+            )
+        self.assertTrue(transcript.is_file())
+
+    def test_rescan_ignores_mtime_only_change_when_fingerprint_matches(self) -> None:
+        project_id, video_id = self.add_project_and_video(paused=0)
+        source = self.root / "one.mp4"
+        source.write_bytes(b"0123456789")
+        fingerprint = server.file_fingerprint(source)
+        with server.db() as connection:
+            connection.execute(
+                """UPDATE videos SET status='done',progress=1,content_fingerprint=?,
+                   size=?,mtime=? WHERE id=?""",
+                (fingerprint, source.stat().st_size, source.stat().st_mtime - 10, video_id),
+            )
+
+        with mock.patch.object(server, "media_duration", return_value=10):
+            self.assertEqual(server.scan_project(project_id), 1)
+
+        with server.db() as connection:
+            video = connection.execute("SELECT status,progress FROM videos WHERE id=?", (video_id,)).fetchone()
+        self.assertEqual(video["status"], "done")
+        self.assertEqual(video["progress"], 1)
+
     def test_paused_project_cannot_be_claimed(self) -> None:
         _, video_id = self.add_project_and_video(paused=1)
         self.assertIsNone(server.claim_transcription_job(video_id, 0))
@@ -247,6 +356,18 @@ class QueueTests(TemporaryStorageTest):
 
 
 class SearchAndUtilityTests(unittest.TestCase):
+    def test_http_server_owns_its_socket_before_reporting_ready(self) -> None:
+        with mock.patch.object(server, "init_storage"), \
+             mock.patch.object(server.hardware_preflight, "apply_saved_device", return_value=False), \
+             mock.patch.object(server, "HOST", "127.0.0.1"), \
+             mock.patch.object(server, "PORT", 0):
+            http_server = server.create_http_server()
+        try:
+            self.assertGreater(http_server.server_address[1], 0)
+            self.assertTrue(http_server.daemon_threads)
+        finally:
+            http_server.server_close()
+
     def test_exact_matching_does_not_match_inside_unrelated_words(self) -> None:
         self.assertFalse(server.text_token_matches("мир", "владимир"))
         self.assertFalse(server.text_token_matches("рост", "просто"))
@@ -299,6 +420,39 @@ class ModelBootstrapTests(unittest.TestCase):
             self.assertEqual(snapshot["bytes_per_second"], 5)
             snapshot["models"][0]["percent"] = 99
             self.assertEqual(manager.snapshot()["models"][0]["percent"], 50)
+
+
+class ReleaseContractTests(unittest.TestCase):
+    def test_platform_locks_include_direct_and_platform_dependencies(self) -> None:
+        direct = {}
+        for raw in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines():
+            line = raw.split(";", 1)[0].strip()
+            if line and "==" in line:
+                name, version = line.split("==", 1)
+                direct[name.lower().replace("_", "-")] = version
+        macos = locked_versions(ROOT / "requirements-macos.lock")
+        windows = locked_versions(ROOT / "requirements-windows.lock")
+        for name, version in direct.items():
+            if name == "mlx-whisper":
+                self.assertEqual(macos.get(name), version)
+                self.assertNotIn(name, windows)
+            elif name == "faster-whisper":
+                self.assertEqual(windows.get(name), version)
+                self.assertNotIn(name, macos)
+            else:
+                self.assertEqual(macos.get(name), version)
+                self.assertEqual(windows.get(name), version)
+        self.assertIn("macholib", locked_versions(ROOT / "requirements-build-macos.lock"))
+        self.assertIn("pefile", locked_versions(ROOT / "requirements-build-windows.lock"))
+
+    def test_release_version_and_macos_minimum_are_synchronized(self) -> None:
+        version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        self.assertRegex(version, r"^\d+\.\d+\.\d+\.\d+$")
+        self.assertIn('\"LSMinimumSystemVersion\": \"14.0\"', (ROOT / "Rothbald.spec").read_text())
+        self.assertIn("macOS 14.0+", (ROOT / "README.md").read_text(encoding="utf-8"))
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertIn("gh release create \"$TAG\" --verify-tag --draft", workflow)
+        self.assertIn('[[ "$REQUESTED_TAG" =~ ^v[0-9]+\\.', workflow)
 
 
 if __name__ == "__main__":

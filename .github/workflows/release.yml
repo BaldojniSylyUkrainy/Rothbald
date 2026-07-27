@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Four-part release tag, for example v0.1.0.0"
+        description: "Existing green-main release tag, for example v0.1.1.0"
         required: true
         type: string
       notes:
@@ -13,15 +13,51 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    env:
+      REQUESTED_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Require current main commit and matching existing tag
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || {
+            echo "Manual signed releases must be dispatched from main"
+            exit 1
+          }
+          [[ "$REQUESTED_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Tag must use the vMAJOR.MINOR.PATCH.HOTFIX format"
+            exit 1
+          }
+          [[ "$REQUESTED_TAG" == "v$VERSION" ]] || {
+            echo "Requested tag must be v$VERSION"
+            exit 1
+          }
+          TAG_COMMIT="$(git rev-list -n 1 "$REQUESTED_TAG" 2>/dev/null || true)"
+          [[ -n "$TAG_COMMIT" ]] || {
+            echo "Tag $REQUESTED_TAG does not exist; create it only after main CI is green"
+            exit 1
+          }
+          [[ "$TAG_COMMIT" == "$GITHUB_SHA" ]] || {
+            echo "Tag $REQUESTED_TAG points to $TAG_COMMIT, not dispatched main commit $GITHUB_SHA"
+            exit 1
+          }
+
   windows:
     name: Windows x64
+    needs: preflight
     runs-on: windows-latest
     environment: release
     env:
@@ -33,6 +69,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: |
+            requirements-windows.lock
+            requirements-build-windows.lock
       - name: Validate tag
         shell: pwsh
         run: |
@@ -44,7 +83,7 @@ jobs:
       - name: Install bundled runtime tools
         run: choco install ffmpeg innosetup --no-progress -y
       - name: Install Python dependencies
-        run: python -m pip install -r requirements.txt -r requirements-build.txt
+        run: python -m pip install -r requirements-windows.lock -r requirements-build-windows.lock
       - name: Verify source and tests
         shell: bash
         run: |
@@ -83,11 +122,13 @@ jobs:
 
   macos:
     name: macOS Apple Silicon
+    needs: preflight
     runs-on: macos-15
     environment: release
     env:
       REQUESTED_TAG: ${{ inputs.tag }}
       ROTHBALD_BUILD_CHANNEL: release
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -100,6 +141,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: |
+            requirements-macos.lock
+            requirements-build-macos.lock
       - name: Validate tag and release credentials
         run: |
           VERSION="$(tr -d '[:space:]' < VERSION)"
@@ -111,7 +155,7 @@ jobs:
       - name: Install ffmpeg
         run: brew install ffmpeg
       - name: Install Python dependencies
-        run: python -m pip install -r requirements.txt -r requirements-build.txt
+        run: python -m pip install -r requirements-macos.lock -r requirements-build-macos.lock
       - name: Verify source and tests
         run: |
           python scripts/prepare_build.py
@@ -126,9 +170,11 @@ jobs:
           KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
           {
             echo "APPLE_API_KEY_PATH=$API_KEY_PATH"
+            echo "ORIGINAL_KEYCHAINS_PATH=$RUNNER_TEMP/rothbald-original-keychains.txt"
             echo "SIGNING_KEYCHAIN_PATH=$KEYCHAIN_PATH"
             echo "SIGNING_CERTIFICATE_PATH=$CERTIFICATE_PATH"
           } >> "$GITHUB_ENV"
+          security list-keychains -d user > "$RUNNER_TEMP/rothbald-original-keychains.txt"
           printf '%s' "$APPLE_CERTIFICATE" | /usr/bin/base64 --decode > "$CERTIFICATE_PATH" || { echo "APPLE_CERTIFICATE is not valid Base64"; exit 1; }
           printf '%s' "$APPLE_API_KEY_CONTENT" > "$API_KEY_PATH"
           chmod 600 "$CERTIFICATE_PATH" "$API_KEY_PATH"
@@ -138,7 +184,13 @@ jobs:
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH" || { echo "Keychain could not import APPLE_CERTIFICATE"; exit 1; }
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH" "$HOME/Library/Keychains/login.keychain-db"
+          ORIGINAL_KEYCHAINS=()
+          while IFS= read -r LINE; do
+            ITEM="${LINE#*\"}"
+            ITEM="${ITEM%\"*}"
+            [[ -z "$ITEM" ]] || ORIGINAL_KEYCHAINS+=("$ITEM")
+          done < "$RUNNER_TEMP/rothbald-original-keychains.txt"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" "${ORIGINAL_KEYCHAINS[@]}"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -F "$APPLE_SIGNING_IDENTITY"
       - name: Build, sign, notarize, staple, and verify
         run: |
@@ -154,7 +206,10 @@ jobs:
           grep -q "Authority=Developer ID Application:" <<<"$SIGNATURE_INFO"
           grep -q "flags=.*runtime" <<<"$SIGNATURE_INFO"
           grep -q "Timestamp=" <<<"$SIGNATURE_INFO"
-          ! codesign --display --entitlements :- "$APP_PATH" 2>/dev/null | grep -q "com.apple.security.get-task-allow"
+          if codesign --display --entitlements :- "$APP_PATH" 2>/dev/null | grep -q "com.apple.security.get-task-allow"; then
+            echo "Release bundle unexpectedly allows debugger attachment"
+            exit 1
+          fi
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$RELEASE_DIR/Rothbald_${VERSION}_aarch64.zip"
           ditto "$APP_PATH" "$STAGING_DIR/Rothbald.app"
@@ -185,15 +240,26 @@ jobs:
       - name: Remove temporary signing material
         if: always()
         run: |
-          security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" || true
+          if [[ -s "${ORIGINAL_KEYCHAINS_PATH:-}" ]]; then
+            ORIGINAL_KEYCHAINS=()
+            while IFS= read -r LINE; do
+              ITEM="${LINE#*\"}"
+              ITEM="${ITEM%\"*}"
+              [[ -z "$ITEM" ]] || ORIGINAL_KEYCHAINS+=("$ITEM")
+            done < "$ORIGINAL_KEYCHAINS_PATH"
+            [[ "${#ORIGINAL_KEYCHAINS[@]}" -eq 0 ]] || security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@]}" || true
+          fi
           [[ -z "${SIGNING_KEYCHAIN_PATH:-}" ]] || security delete-keychain "$SIGNING_KEYCHAIN_PATH" || true
           [[ -z "${SIGNING_CERTIFICATE_PATH:-}" ]] || rm -f "$SIGNING_CERTIFICATE_PATH"
           [[ -z "${APPLE_API_KEY_PATH:-}" ]] || rm -f "$APPLE_API_KEY_PATH"
+          [[ -z "${ORIGINAL_KEYCHAINS_PATH:-}" ]] || rm -f "$ORIGINAL_KEYCHAINS_PATH"
 
   publish-draft:
     name: Assemble draft release
     needs: [windows, macos]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
       - uses: actions/download-artifact@v7
@@ -219,6 +285,6 @@ jobs:
             IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
             [[ "$IS_DRAFT" == "true" ]] || { echo "Release $TAG is already published; refusing to overwrite it"; exit 1; }
           else
-            gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TAG"
+            gh release create "$TAG" --verify-tag --draft --title "$TAG"
           fi
           gh release upload "$TAG" release-assets/* --clobber

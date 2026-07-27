@@ -31,7 +31,8 @@ Clipboard вставляється в `APPLE_CERTIFICATE`, пароль — у
 - `APPLE_API_KEY_CONTENT` — повний вміст `AuthKey_<KEY_ID>.p8`.
 
 Workflow записує `.p12` і `.p8` лише у тимчасову папку runner-а, використовує
-окремий тимчасовий Keychain і видаляє все через cleanup step навіть після збою.
+окремий тимчасовий Keychain, зберігає й відновлює початковий Keychain search
+list і видаляє все через cleanup step навіть після збою.
 
 ## Що перевіряє CI
 

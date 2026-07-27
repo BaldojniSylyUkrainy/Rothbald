@@ -20,6 +20,7 @@ Selecting a video only controls the player. It must never narrow the search scop
 ## Target environments
 
 - Apple Silicon uses `mlx-whisper` and is the primary optimized target.
+- Packaged macOS builds require macOS 14.0 or newer. The pinned PyTorch Apple Silicon wheel has a macOS 14 deployment target; do not advertise Ventura compatibility unless the dependency set changes and a real Ventura build is verified.
 - Windows x64 uses `faster-whisper` Turbo. The hardware gate persists `ROTHBALD_DEVICE=auto|cpu|cuda:N`; Auto prefers a CTranslate2-visible NVIDIA GPU and otherwise falls back to CPU/int8.
 - Source launches require `ffmpeg` and `ffprobe`; packaged builds include the Python runtime, PySide6/QtWebEngine, both media binaries, and all backend dependencies.
 - Python virtual environment: `.venv/`.
@@ -42,7 +43,7 @@ Selecting a video only controls the player. It must never narrow the search scop
 - `static/index.html` — application markup.
 - `static/app.js` — client state, queue progress, search tabs, video selection, and project actions.
 - `static/style.css` — responsive dark interface.
-- `requirements.txt` — direct Python dependencies; `requirements.lock` is the reproducible full environment used by setup.
+- `requirements.txt` / `requirements-build.txt` — direct runtime and build inputs. `requirements-macos.lock`, `requirements-windows.lock`, and the matching `requirements-build-*.lock` files are the reproducible Python 3.12 environments used by setup and CI.
 - `VERSION` — the single four-component public application version.
 - `app_info.py` and `scripts/prepare_build.py` — runtime build metadata and deterministic platform version resources.
 - `.github/workflows/release.yml` — manual gated signed/notarized draft-release pipeline.
@@ -55,7 +56,7 @@ Selecting a video only controls the player. It must never narrow the search scop
 
 The user chooses a folder through the platform-native macOS or Windows picker. `scan_project()` recursively finds supported media without copying it. Supported extensions currently include MP4, MOV, MKV, WebM, M4V, AVI, MP3, M4A, WAV, FLAC, and OGG.
 
-Video identity is stable inside a project and based on `project_id + relative_path`, not the absolute SSD path. The historical global `UNIQUE(source_path)` is rebuilt away during migration, so the same physical media may safely appear in two different projects. Size and mtime detect modifications; a quick size + first/last-megabyte fingerprint protects `Locate` from attaching an unrelated folder. `ffprobe` has a 45-second timeout and always runs outside SQLite write transactions. Rescanning queues only new or changed media.
+Video identity is stable inside a project and based on `project_id + relative_path`, not the absolute SSD path. The historical global `UNIQUE(source_path)` is rebuilt away during migration, so the same physical media may safely appear in two different projects. Size and mtime select files that need verification; a quick size + first/last-megabyte fingerprint prevents an mtime-only change from forcing transcription and protects `Locate` from attaching an unrelated folder. `ffprobe` has a 45-second timeout and always runs outside SQLite write transactions. Rescanning queues only genuinely new or changed media.
 
 Scanning first marks the project's media unavailable and then marks every rediscovered relative path available. It must never delete a video row, transcript, or semantic index merely because a file or drive is absent. This is required for removable SSDs and `Locate`.
 
@@ -95,7 +96,7 @@ Important resource decision: semantic embeddings must run on CPU. Do not move th
 
 ### Atomic transcript replacement
 
-New transcription output is parsed before existing segments are deleted. Existing transcript/search data therefore remains available until a replacement succeeds. A successful replacement increments `transcript_revision`; semantic chunks are stamped with the same revision and are searchable only when `semantic_revision == transcript_revision`. If semantic reindexing fails, vectors from the older transcript can never leak into results. On transcription failure, the prior searchable data remains.
+New transcription output is parsed before existing segments are deleted. Existing transcript/search data therefore remains available until a replacement succeeds, including when rescan detects changed source media. Rescan must never delete segments, semantic chunks, checkpoints, or transcript JSON preemptively. A successful replacement increments `transcript_revision`; semantic chunks are stamped with the same revision and are searchable only when `semantic_revision == transcript_revision`. If semantic reindexing fails, vectors from the older transcript can never leak into results. On transcription failure, the prior searchable data remains.
 
 ### Semantic indexing
 
@@ -214,6 +215,8 @@ Queue items are three-tuples `(action, video_id, queue_generation)`. Never enque
 Static files send `Cache-Control: no-store` so UI fixes appear after reload.
 State-changing requests reject foreign browser origins; missing Origin remains allowed for local command-line diagnostics.
 
+The desktop launcher binds the local HTTP socket synchronously before it creates the WebView. A second instance or another process occupying the configured port must fail closed; never replace this with a readiness probe that could accept a response from an unrelated local service. Request-handler threads are daemonized so shutdown cannot hang behind an abandoned media request.
+
 ## Operational notes
 
 - Server-side changes require stopping with `Control-C` and rerunning `start.command`.
@@ -222,10 +225,10 @@ State-changing requests reject foreign browser origins; missing Origin remains a
 - Keep the Terminal window open during long transcription runs. `start.command` automatically prevents idle system sleep through `caffeinate`; no manual Energy settings change is normally needed.
 - Screen locking and display sleep are safe. Closing the MacBook lid normally forces sleep and cannot be reliably overridden by this app.
 - External SSD disconnection causes media access errors but must not delete completed transcript data.
-- `setup.command` performs Apple-Silicon, Python ≥3.11, ffmpeg/ffprobe, and 8-GB-free-space checks and installs `requirements.lock`. Model verification/download now belongs to the in-app model gate.
+- `setup.command` performs Apple-Silicon, Python ≥3.11, ffmpeg/ffprobe, and 8-GB-free-space checks and installs `requirements-macos.lock`; `setup.ps1` installs `requirements-windows.lock`. Model verification/download now belongs to the in-app model gate.
 - `setup.ps1` performs the corresponding Windows dependency checks and installs the platform-marked requirements.
 - `.github/workflows/build.yml` tests and packages CI artifacts on native `macos-15` ARM64 and `windows-latest` runners.
-- `.github/workflows/release.yml` is manual-only and uses the protected `release` environment. It signs/notarizes/staples the Apple Silicon DMG, verifies the Windows bundle, generates checksums plus `latest.json`, and creates a draft release that must be published manually.
+- `.github/workflows/release.yml` is manual-only and uses the `release` environment. Its preflight accepts only an existing four-part tag that equals `VERSION`, points at the dispatched current `main` commit, and was created after green main CI. It installs platform-specific runtime/build locks, signs/notarizes/staples the Apple Silicon DMG, restores the runner's original Keychain search list, verifies the Windows bundle, generates checksums plus `latest.json`, and creates a draft release that must be published manually. Environment reviewers and branch policy are optional defense-in-depth when the repository's GitHub plan supports them.
 - Build version metadata is generated from `VERSION` before PyInstaller. The packaged UI reads `/api/app`; never hardcode a displayed version in HTML or JavaScript.
 
 ## Verification checklist
@@ -233,7 +236,7 @@ State-changing requests reject foreign browser origins; missing Origin remains a
 Run after changes:
 
 ```bash
-.venv/bin/python -m py_compile hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py rothbald.py
+.venv/bin/python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py
 node --check static/app.js
 .venv/bin/python -m unittest discover -s tests -v
 ```
@@ -271,8 +274,14 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 
 ### 2026-07-27
 
+- Released the `0.1.1.0` readiness hardening: rescan now distinguishes content changes from mtime-only changes and preserves the last searchable transcript/semantic revision until replacement succeeds.
+- Made the desktop launcher own its listening socket before opening QtWebEngine, fail clearly on a second instance/occupied port, daemonize request handlers, and close the server cleanly with the window.
+- Added separate reproducible Python 3.12 runtime and PyInstaller build locks for Apple Silicon and Windows x64. CI and release builds now install only the matching lock pair; dependency audit reported no known vulnerabilities.
+- Raised packaged macOS support to 14.0 to match the pinned PyTorch wheel, synchronized the hardware gate and bundle metadata, and added regression coverage.
+- Hardened the `yt-dlp-BD`-style manual release workflow: current-main/existing-tag preflight, least-privilege tokens, platform locks, original Keychain search-list restoration, verified existing tag use, and draft-only publication.
+- Verified 22 Python regressions, JavaScript/Python syntax, lock compatibility, workflow syntax/actionlint, a real 1.4 GB Apple Silicon PyInstaller bundle, arm64 architecture, bundle metadata, deep code-sign structure, and a frozen local-API startup smoke.
 - Added a mandatory pre-model hardware gate that checks supported OS/architecture, RAM, free disk, CPU capacity, and usable compute devices before any model download or queue worker starts. It blocks unsafe configurations, warns about likely slow operation, persists a hardware fingerprint, and rechecks after meaningful configuration changes.
-- Added Auto / CPU / CUDA device selection on Windows and explicit Apple GPU/MLX reporting on macOS. Documented 8 GB RAM/6 GB disk minimum and 16 GB RAM/8 GB disk recommended requirements; the macOS bundle now declares 13.5 as its minimum system version.
+- Added Auto / CPU / CUDA device selection on Windows and explicit Apple GPU/MLX reporting on macOS. Documented 8 GB RAM/6 GB disk minimum and 16 GB RAM/8 GB disk recommended requirements.
 - Moved project navigation and destructive actions into a visible top toolbar, made project-card deletion explicit, and reduced the application footer to a compact bottom row.
 - Added a quiet application footer with `baldojnisyly@gmail.com` support contact and the version embedded by the current build. The UI fetches `/api/app`; it contains no hardcoded version string.
 - Added the single four-part `VERSION`, generated build metadata, macOS `Info.plist` versioning, Windows executable version resources, and regression coverage for embedded metadata precedence.

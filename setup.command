@@ -24,8 +24,7 @@ if [[ ! -x .venv/bin/python ]]; then
 fi
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -r requirements.lock
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-macos.lock
 echo
 echo "Готово. Запусти start.command — Rothbald сам перевірить і завантажить моделі у своєму вікні."
 read -k 1

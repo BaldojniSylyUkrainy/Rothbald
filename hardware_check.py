@@ -189,8 +189,8 @@ class HardwarePreflight:
         blockers = []
         if not supported:
             blockers.append("Ця збірка підтримує Apple Silicon або 64-бітну Windows x64.")
-        if sys.platform == "darwin" and os_version and _version_tuple(os_version) < (13, 5):
-            blockers.append("Потрібна macOS 13.5 або новіша для MLX і QtWebEngine.")
+        if sys.platform == "darwin" and os_version and _version_tuple(os_version) < (14, 0):
+            blockers.append("Потрібна macOS 14.0 або новіша для MLX, PyTorch і QtWebEngine.")
         if sys.platform == "win32":
             try:
                 windows_build = int(sys.getwindowsversion().build)

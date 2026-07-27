@@ -1096,10 +1096,30 @@ def scan_project(project_id: str) -> int:
                     (project_id, source),
                 ).fetchone()
         video_id = old["id"] if old else hashlib.sha256(f"{project_id}\0{relative}".encode()).hexdigest()[:32]
-        changed = bool(old and (old["size"] != stat.st_size or abs(old["mtime"] - stat.st_mtime) > .001))
+        metadata_changed = bool(
+            old and (old["size"] != stat.st_size or abs(old["mtime"] - stat.st_mtime) > .001)
+        )
+        fingerprint = (
+            file_fingerprint(path)
+            if not old or metadata_changed or not old["content_fingerprint"]
+            else old["content_fingerprint"]
+        )
+        changed = bool(
+            old
+            and (
+                old["size"] != stat.st_size
+                or (
+                    old["content_fingerprint"]
+                    and old["content_fingerprint"] != fingerprint
+                )
+                or (
+                    not old["content_fingerprint"]
+                    and abs(old["mtime"] - stat.st_mtime) > .001
+                )
+            )
+        )
         status = "ready" if not old or changed else old["status"]
         duration = old["media_duration"] if old and not changed and old["media_duration"] > 0 else media_duration(path)
-        fingerprint = old["content_fingerprint"] if old and not changed else file_fingerprint(path)
         progress = 1.0 if status == "done" else (0.0 if changed or not old else old["progress"])
         with db() as connection:
             connection.execute(
@@ -1112,17 +1132,10 @@ def scan_project(project_id: str) -> int:
                     source_path=excluded.source_path, relative_path=excluded.relative_path, available=1,
                     size=excluded.size, mtime=excluded.mtime,content_fingerprint=excluded.content_fingerprint,
                     status=excluded.status, progress=excluded.progress,
-                    media_duration=excluded.media_duration, updated_at=excluded.updated_at,
-                    semantic_status=CASE WHEN videos.size != excluded.size OR videos.mtime != excluded.mtime THEN 'pending' ELSE videos.semantic_status END,
-                    semantic_progress=CASE WHEN videos.size != excluded.size OR videos.mtime != excluded.mtime THEN 0 ELSE videos.semantic_progress END
+                    media_duration=excluded.media_duration, updated_at=excluded.updated_at
                 """,
                 (video_id, project_id, path.name, source, relative, stat.st_size, stat.st_mtime, fingerprint, status, progress, duration, now, now),
             )
-            if changed:
-                connection.execute("DELETE FROM segments WHERE video_id=?", (video_id,))
-                connection.execute("DELETE FROM semantic_chunks WHERE video_id=?", (video_id,))
-                connection.execute("DELETE FROM transcription_parts WHERE video_id=?", (video_id,))
-                (TRANSCRIPT_DIR / f"{video_id}.json").unlink(missing_ok=True)
             if status == "ready":
                 next_status = "paused" if project["queue_paused"] else "queued"
                 connection.execute(
@@ -1359,12 +1372,12 @@ def transcribe(video_id: str, generation: int) -> None:
                     transcription_source = source
                 last_saved = 0.0
 
-                def consume_progress(line: str) -> None:
+                def consume_progress(line: str, part_index: int = index) -> None:
                     nonlocal last_saved
                     parsed = progress_from_line(line)
                     now = time.time()
                     if parsed is not None and (parsed >= 1 or now - last_saved >= 0.8):
-                        overall = (index + parsed) / max(1, len(ranges))
+                        overall = (part_index + parsed) / max(1, len(ranges))
                         with db() as connection:
                             connection.execute(
                                 """UPDATE videos SET progress=?,updated_at=? WHERE id=?
@@ -1838,17 +1851,29 @@ class Handler(BaseHTTPRequestHandler):
                 remaining -= len(chunk)
 
 
-def main() -> None:
+def create_http_server() -> ThreadingHTTPServer:
     init_storage()
-    if hardware_preflight.apply_saved_device():
-        start_runtime()
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    http_server = ThreadingHTTPServer((HOST, PORT), Handler)
+    http_server.daemon_threads = True
+    try:
+        if hardware_preflight.apply_saved_device():
+            start_runtime()
+    except Exception:
+        http_server.server_close()
+        raise
+    return http_server
+
+
+def main() -> None:
+    server = create_http_server()
     print(f"Відкрий http://{HOST}:{PORT}")
     print(f"Модель: {MODEL}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nЗупинено")
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

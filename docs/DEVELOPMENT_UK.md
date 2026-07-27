@@ -4,7 +4,7 @@
 
 ## Локальний запуск із коду
 
-Потрібні Python 3.11+ та `ffmpeg`/`ffprobe`.
+Потрібні Python 3.11+ та `ffmpeg`/`ffprobe`. CI й release використовують Python 3.12.
 
 ### Apple Silicon
 
@@ -25,8 +25,16 @@ node --check static/app.js
 python -m unittest discover -s tests -v
 ```
 
+Source setup встановлює повний platform lock: `requirements-macos.lock` або
+`requirements-windows.lock`. PyInstaller додатково використовує відповідний
+`requirements-build-*.lock`. `requirements.txt` і `requirements-build.txt` є
+вхідними файлами для регенерації lock-файлів, а не CI install targets.
+
 ## Пакування
 
-Перед PyInstaller виконай `python scripts/prepare_build.py`, а потім `pyinstaller --noconfirm Rothbald.spec`. Збірка містить Python runtime, PySide6/QtWebEngine, `ffmpeg`, `ffprobe` та весь код бекенду.
+Перед PyInstaller встанови runtime/build lock для поточної платформи, виконай
+`python scripts/prepare_build.py`, а потім `pyinstaller --noconfirm Rothbald.spec`.
+Для macOS build environment має містити `MACOSX_DEPLOYMENT_TARGET=14.0`. Збірка
+містить Python runtime, PySide6/QtWebEngine, `ffmpeg`, `ffprobe` та весь код бекенду.
 
 GitHub Actions нативно збирає Apple Silicon `.app`/DMG на macOS runner і Windows x64 застосунок з інсталятором Inno Setup на Windows runner.

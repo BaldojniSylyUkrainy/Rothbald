@@ -15,8 +15,8 @@ Workflow:
 
 ## 1. Repository visibility і main ruleset
 
-Як і `yt-dlp-BD`, repository має бути public. Це дає rulesets і стандартні
-GitHub-hosted runners без платного private-repository ліміту.
+Workflow працює і для private repository. Для private repository доступність і
+ліміти GitHub-hosted macOS/Windows runners залежать від GitHub plan власника.
 
 Створіть active branch ruleset `Protect main` для default branch:
 
@@ -41,14 +41,16 @@ Release workflow використовує лише офіційні `actions/che
 
 ## 3. Protected environment `release`
 
-Створіть environment рівно `release`:
+Створіть environment рівно `release`. Якщо GitHub plan репозиторію підтримує
+environment deployment policies, обмежте його:
 
-- deployment branch policy: тільки `main`;
-- required reviewer: `2FED`;
-- `prevent_self_review`: true.
+- deployment branch policy: тільки `main`.
 
-Це другий ручний gate після `workflow_dispatch`; release jobs не отримають
-підписувальні секрети до approval reviewer-а.
+Якщо repository має ще одного trusted owner, додайте його required reviewer і
+увімкніть `prevent_self_review`. Не призначайте єдиного release operator-а
+`2FED` required reviewer-ом із self-review prevention: він не зможе approve
+власний запуск. Навіть без environment protection workflow має окремий
+`workflow_dispatch` і fail-closed tag/main/SHA preflight.
 
 ## 4. Secrets і variable
 
@@ -74,15 +76,17 @@ Rothbald не використовує `TAURI_SIGNING_PRIVATE_KEY`: Tauri `.sig`
 
 ## 5. Запуск релізу
 
-1. Змініть `VERSION` окремим reviewed commit, якщо потрібна нова версія.
-2. Переконайтесь, що потрібний commit у `main`.
-3. Відкрийте **Actions → Manual signed release → Run workflow**.
-4. Branch: `main`.
-5. `tag`: строго `v` + значення `VERSION`, наприклад `v0.1.0.0`.
-6. `notes`: короткий текст змін.
-7. Approve обидва jobs у protected environment `release`.
+1. Змініть `VERSION` у reviewed commit і дочекайтесь зеленого `test-and-build` на `main`.
+2. Створіть annotated tag `v` + значення `VERSION`, наприклад `v0.1.1.0`, саме на зеленому `main`, і запуште його.
+3. Переконайтесь, що tag-triggered `test-and-build` також зелений.
+4. Відкрийте **Actions → Manual signed release → Run workflow**.
+5. Branch: лише `main`.
+6. `tag`: уже наявний тег із попереднього кроку.
+7. `notes`: короткий текст змін.
+8. Якщо для environment налаштовані required reviewers, approve macOS і Windows jobs.
 
-Workflow fail-closed зупиниться, якщо tag не збігається, бракує credential,
+Workflow fail-closed зупиниться, якщо запуск зроблено не з поточного `main`, тег
+не існує, не вказує на цей commit або не збігається з `VERSION`, бракує credential,
 Developer ID signature/hardened runtime/timestamp, Apple notarization не має
 статусу `Accepted`, stapling невалідний або бракує будь-якого release asset.
 
