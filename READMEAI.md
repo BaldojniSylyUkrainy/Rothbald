@@ -291,6 +291,11 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 
 ## Changelog
 
+### 2026-07-28
+
+- Prepared hotfix `0.2.0.1`: rebuilt the macOS ICNS through Apple `iconutil` from a complete standard iconset so Finder and Spotlight receive valid 16 px and 32 px representations.
+- Prevented the decorative model-gate background from creating phantom overflow, while preserving vertical scrolling on genuinely small screens. Added macOS iconset and model-gate overflow regression coverage.
+
 ### 2026-07-27
 
 - Bumped the feature release to `0.2.0.0` and added a signed cross-platform updater. Release builds check the latest published GitHub Release, verify an Ed25519 manifest, stream and SHA-256-check the exact platform installer, render escaped release notes, and hand the verified installer to the native OS flow.

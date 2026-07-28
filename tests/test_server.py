@@ -5,6 +5,9 @@ import hashlib
 import json
 import os
 import sqlite3
+import struct
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -551,6 +554,48 @@ class UpdaterTests(unittest.TestCase):
 
 
 class ReleaseContractTests(unittest.TestCase):
+    def test_model_gate_does_not_force_viewport_scrollbars(self) -> None:
+        stylesheet = (ROOT / "static/style.css").read_text(encoding="utf-8")
+        self.assertIn("overflow-x: hidden; overflow-y: auto;", stylesheet)
+        self.assertRegex(
+            stylesheet,
+            r"\.model-gate::after\s*\{\s*position:\s*fixed;",
+        )
+
+    @unittest.skipUnless(sys.platform == "darwin", "ICNS validation requires macOS iconutil")
+    def test_macos_icon_contains_complete_standard_iconset(self) -> None:
+        expected_sizes = {
+            "icon_16x16.png": (16, 16),
+            "icon_16x16@2x.png": (32, 32),
+            "icon_32x32.png": (32, 32),
+            "icon_32x32@2x.png": (64, 64),
+            "icon_128x128.png": (128, 128),
+            "icon_128x128@2x.png": (256, 256),
+            "icon_256x256.png": (256, 256),
+            "icon_256x256@2x.png": (512, 512),
+            "icon_512x512.png": (512, 512),
+            "icon_512x512@2x.png": (1024, 1024),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            iconset = Path(temporary) / "app-icon.iconset"
+            subprocess.run(
+                [
+                    "/usr/bin/iconutil",
+                    "--convert",
+                    "iconset",
+                    str(ROOT / "assets/app-icon.icns"),
+                    "--output",
+                    str(iconset),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            self.assertEqual({path.name for path in iconset.iterdir()}, set(expected_sizes))
+            for filename, expected_size in expected_sizes.items():
+                payload = (iconset / filename).read_bytes()
+                self.assertEqual(payload[:8], b"\x89PNG\r\n\x1a\n")
+                self.assertEqual(struct.unpack(">II", payload[16:24]), expected_size)
+
     def test_release_manifest_uses_user_facing_installer_names(self) -> None:
         version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
         private_key, public_key = updater_key_pair()

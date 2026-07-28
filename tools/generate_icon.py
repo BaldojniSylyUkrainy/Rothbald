@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-from io import BytesIO
 from pathlib import Path
-import struct
+import subprocess
+from tempfile import TemporaryDirectory
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -27,11 +27,26 @@ draw.text(
 canvas.save(ASSETS / "app-icon.png")
 canvas.save(ASSETS / "app-icon.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
 
-chunks = []
-for kind, icon_size in ((b"ic10", 1024), (b"ic09", 512), (b"ic08", 256), (b"ic07", 128), (b"icp6", 64), (b"icp5", 32), (b"icp4", 16)):
-    output = BytesIO()
-    canvas.resize((icon_size, icon_size), Image.Resampling.LANCZOS).save(output, format="PNG")
-    payload = output.getvalue()
-    chunks.append(kind + struct.pack(">I", len(payload) + 8) + payload)
-body = b"".join(chunks)
-(ASSETS / "app-icon.icns").write_bytes(b"icns" + struct.pack(">I", len(body) + 8) + body)
+iconset_sizes = {
+    "icon_16x16.png": 16,
+    "icon_16x16@2x.png": 32,
+    "icon_32x32.png": 32,
+    "icon_32x32@2x.png": 64,
+    "icon_128x128.png": 128,
+    "icon_128x128@2x.png": 256,
+    "icon_256x256.png": 256,
+    "icon_256x256@2x.png": 512,
+    "icon_512x512.png": 512,
+    "icon_512x512@2x.png": 1024,
+}
+
+with TemporaryDirectory() as temporary_directory:
+    iconset = Path(temporary_directory) / "app-icon.iconset"
+    iconset.mkdir()
+    for filename, icon_size in iconset_sizes.items():
+        canvas.resize((icon_size, icon_size), Image.Resampling.LANCZOS).save(iconset / filename)
+
+    subprocess.run(
+        ["/usr/bin/iconutil", "--convert", "icns", str(iconset), "--output", str(ASSETS / "app-icon.icns")],
+        check=True,
+    )
