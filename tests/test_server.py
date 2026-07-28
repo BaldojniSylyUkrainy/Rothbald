@@ -17,6 +17,7 @@ from unittest import mock
 import app_info
 import hardware_check
 import model_manager
+import process_utils
 import rothbald
 import server
 import transcribe_video
@@ -107,6 +108,14 @@ class ApplicationInfoTests(unittest.TestCase):
 
 
 class HardwarePreflightTests(unittest.TestCase):
+    def test_windows_child_process_flags_hide_console_windows(self) -> None:
+        with mock.patch.object(process_utils.sys, "platform", "win32"):
+            quiet = process_utils.quiet_process_options()
+            grouped = process_utils.quiet_process_options(new_process_group=True)
+        self.assertTrue(quiet["creationflags"] & 0x08000000)
+        self.assertTrue(grouped["creationflags"] & 0x08000000)
+        self.assertTrue(grouped["creationflags"] & 0x00000200)
+
     def test_frozen_runtime_tool_is_resolved_from_pyinstaller_internal_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             internal = Path(temporary) / "_internal"
@@ -828,6 +837,16 @@ class UpdaterTests(unittest.TestCase):
 
 
 class ReleaseContractTests(unittest.TestCase):
+    def test_backend_pickers_use_themed_menus_and_model_poll_skips_hardware_probe(self) -> None:
+        markup = (ROOT / "static/index.html").read_text(encoding="utf-8")
+        script = (ROOT / "static/app.js").read_text(encoding="utf-8")
+        stylesheet = (ROOT / "static/style.css").read_text(encoding="utf-8")
+        self.assertNotIn('<select id="hardwareDevice"', markup)
+        self.assertNotIn('<select id="appBackendSelect"', markup)
+        self.assertIn('class="choice-menu choice-menu-up hidden"', markup)
+        self.assertIn("bootstrapModels(false, false)", script)
+        self.assertIn(".choice-option[aria-selected=\"true\"]", stylesheet)
+
     def test_model_gate_does_not_force_viewport_scrollbars(self) -> None:
         stylesheet = (ROOT / "static/style.css").read_text(encoding="utf-8")
         self.assertIn("overflow-x: hidden; overflow-y: auto;", stylesheet)

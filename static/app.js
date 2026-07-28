@@ -245,17 +245,35 @@ function hardwareSize(bytes) {
   return value ? `${(value / 1024 ** 3).toFixed(value < 10 * 1024 ** 3 ? 1 : 0)} ГБ` : 'невідомо';
 }
 
+function closeChoicePickers(except = null) {
+  document.querySelectorAll('.choice-picker').forEach(picker => {
+    if (picker === except) return;
+    picker.querySelector('.choice-menu')?.classList.add('hidden');
+    picker.querySelector('[aria-haspopup="listbox"]')?.setAttribute('aria-expanded', 'false');
+  });
+}
+
+function renderChoicePicker(button, menu, options, selected, updateTriggerLabel = false) {
+  button.value = selected;
+  menu.innerHTML = options.map(option =>
+    `<button class="choice-option" type="button" role="option" data-choice="${esc(option.key)}" ` +
+    `aria-selected="${option.key === selected}" ${option.available === false ? 'disabled' : ''}>${esc(option.label)}</button>`
+  ).join('');
+  if (updateTriggerLabel) {
+    const selectedOption = options.find(option => option.key === selected) || options[0];
+    button.querySelector('.choice-label').textContent = selectedOption?.label || 'Пристрій недоступний';
+  }
+}
+
 function renderBackendStatus(report) {
   const node = $('#appBackend');
   const select = $('#appBackendSelect');
+  const devices = (report.devices || []).filter(device => device.available);
   node.textContent = report.backend_label || 'backend невідомий';
   node.title = report.selected_device === 'auto'
     ? `Автоматично вибрано: ${report.backend_label || report.resolved_device}`
     : `Обрано: ${report.backend_label || report.resolved_device}`;
-  select.innerHTML = (report.devices || [])
-    .filter(device => device.available)
-    .map(device => `<option value="${esc(device.key)}" ${device.key === report.selected_device ? 'selected' : ''}>${esc(device.label)}</option>`)
-    .join('');
+  renderChoicePicker(select, $('#appBackendMenu'), devices, report.selected_device);
   select.dataset.serverAllowed = report.backend_change_allowed === false ? '0' : '1';
   select.dataset.blocker = report.backend_change_blocker || '';
   updateBackendAvailability();
@@ -274,10 +292,10 @@ function updateBackendAvailability() {
     : 'Змінити backend розпізнавання';
 }
 
-async function changeBackend() {
+async function changeBackend(device = $('#appBackendSelect').value) {
   const select = $('#appBackendSelect');
-  const device = select.value;
   select.disabled = true;
+  closeChoicePickers();
   try {
     const report = await api('/api/hardware/confirm', {
       method: 'POST',
@@ -320,9 +338,7 @@ function renderHardware(report) {
     ? messages.map(item => `<p class="hardware-message ${item.type}">${esc(item.message)}</p>`).join('')
     : '<p class="hardware-message">✓ Пам’яті, місця на диску й обчислювальних ресурсів достатньо.</p>';
   const select = $('#hardwareDevice');
-  select.innerHTML = (report.devices || []).map(device =>
-    `<option value="${esc(device.key)}" ${device.key === report.selected_device ? 'selected' : ''} ${device.available ? '' : 'disabled'}>${esc(device.label)}</option>`
-  ).join('');
+  renderChoicePicker(select, $('#hardwareDeviceMenu'), report.devices || [], report.selected_device, true);
   select.disabled = Boolean(report.blockers.length);
   $('#confirmHardware').classList.toggle('hidden', Boolean(report.blockers.length));
   $('#recheckHardware').classList.toggle('hidden', !report.blockers.length);
@@ -384,14 +400,16 @@ function renderModelGate(status) {
   }
 }
 
-async function bootstrapModels(retry = false) {
+async function bootstrapModels(retry = false, inspectHardware = true) {
   const gate = $('#modelGate');
   try {
-    const hardware = await api('/api/hardware');
-    renderBackendStatus(hardware);
-    if (hardware.requires_confirmation) {
-      renderHardware(hardware);
-      return;
+    if (inspectHardware) {
+      const hardware = await api('/api/hardware');
+      renderBackendStatus(hardware);
+      if (hardware.requires_confirmation) {
+        renderHardware(hardware);
+        return;
+      }
     }
     $('#hardwarePanel').classList.add('hidden');
     $('#modelProgress').classList.remove('hidden');
@@ -409,7 +427,7 @@ async function bootstrapModels(retry = false) {
       return;
     }
     if (status.status === 'error') return;
-    setTimeout(() => bootstrapModels(), status.status === 'downloading' ? 500 : 900);
+    setTimeout(() => bootstrapModels(false, false), status.status === 'downloading' ? 500 : 900);
   } catch (error) {
     $('#modelGateTitle').textContent = 'Rothbald не відповідає';
     $('#modelGateCopy').textContent = error.message;
@@ -976,10 +994,42 @@ $('#resultTabs').addEventListener('click', event => {
 });
 $('#searchButton').addEventListener('click', search);
 searchInput.addEventListener('keydown', event => { if (event.key === 'Enter') search(); });
+document.addEventListener('click', event => {
+  const option = event.target.closest('.choice-option');
+  if (option) {
+    const picker = option.closest('.choice-picker');
+    const trigger = picker.querySelector('[aria-haspopup="listbox"]');
+    const value = option.dataset.choice;
+    trigger.value = value;
+    picker.querySelectorAll('.choice-option').forEach(item =>
+      item.setAttribute('aria-selected', String(item === option))
+    );
+    if (picker.dataset.pickerKind === 'hardware') {
+      trigger.querySelector('.choice-label').textContent = option.textContent;
+    }
+    closeChoicePickers();
+    if (picker.dataset.pickerKind === 'backend') changeBackend(value);
+    return;
+  }
+  const trigger = event.target.closest('[aria-haspopup="listbox"]');
+  if (trigger) {
+    const picker = trigger.closest('.choice-picker');
+    const menu = picker.querySelector('.choice-menu');
+    const opening = menu.classList.contains('hidden');
+    closeChoicePickers(opening ? picker : null);
+    menu.classList.toggle('hidden', !opening);
+    trigger.setAttribute('aria-expanded', String(opening));
+    if (opening) menu.querySelector('[aria-selected="true"]:not(:disabled)')?.focus();
+    return;
+  }
+  closeChoicePickers();
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') closeChoicePickers();
+});
 $('#retryModels').addEventListener('click', () => bootstrapModels(true));
 $('#confirmHardware').addEventListener('click', confirmHardware);
 $('#recheckHardware').addEventListener('click', () => bootstrapModels());
-$('#appBackendSelect').addEventListener('change', changeBackend);
 $('#checkUpdates').addEventListener('click', () => checkForUpdates(true));
 $('#closeUpdateModal').addEventListener('click', () => $('#updateModal').classList.add('hidden'));
 $('#laterUpdate').addEventListener('click', () => $('#updateModal').classList.add('hidden'));

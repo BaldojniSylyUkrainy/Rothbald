@@ -9,6 +9,7 @@ from pathlib import Path
 
 from hardware_check import runtime_tool_path
 from model_manager import WINDOWS_VULKAN_WHISPER_PATTERNS, WINDOWS_VULKAN_WHISPER_REPO
+from process_utils import quiet_process_options
 
 
 def resolve_faster_whisper_device(preference: str, cuda_count: int) -> tuple[str, int, str]:
@@ -120,6 +121,7 @@ def _run_whisper_cpp(command: list[str], environment: dict[str, str]) -> tuple[i
         encoding="utf-8",
         errors="replace",
         env=environment,
+        **quiet_process_options(),
     )
     errors = []
     assert process.stderr is not None

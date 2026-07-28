@@ -38,6 +38,7 @@ Selecting a video only controls the player. It must never narrow the search scop
 - `prepare_models.py` / `prepare_semantic.py` — download and verify the Whisper and semantic models during setup.
 - `model_manager.py` — platform model manifest, remote revision check, resilient local verification, exact byte progress, and background downloads for the startup gate.
 - `hardware_check.py` — first-run architecture, OS, RAM, disk, CPU, exact CUDA/Vulkan-device detection, persisted acknowledgement, and compute-device preference.
+- `process_utils.py` — shared Windows child-process flags that suppress console windows while preserving managed process groups.
 - `tools/vulkan_probe/` / `scripts/build_whisper_cpp_windows.ps1` — exact Windows Vulkan-device enumeration and reproducible pinned whisper.cpp Vulkan build.
 - `rothbald.py` / `Rothbald.spec` — PySide6/QtWebEngine native desktop-window launcher and self-contained PyInstaller definition.
 - `assets/app-icon.png`, `.icns`, and `.ico` — rounded `Ro` application icon derived from the same Bradley Hand wordmark used by the UI.
@@ -95,7 +96,8 @@ Important resource decision: semantic embeddings must run on CPU. Do not move th
 - `GET /api/hardware` exposes the report and available compute devices. `POST /api/hardware/confirm` persists the hardware fingerprint plus device choice in `hardware.json`. A material hardware/driver/resource-tier change requires acknowledgement again.
 - macOS Apple Silicon always uses MLX on the Apple GPU. Windows offers Auto, CPU, every NVIDIA device that CTranslate2 confirms is CUDA-available, and every non-NVIDIA device returned by the bundled Vulkan probe. AMD is the supported Vulkan target; Intel is labeled experimental. Semantic embeddings remain CPU-only regardless of this choice.
 - Adding a newly detected CUDA/Vulkan device changes the hardware fingerprint and reopens the startup hardware gate before model bootstrap. A persisted `auto` choice resolves to the new preferred backend after confirmation; an explicit `cpu` choice remains selected until the user changes it. This is the migration path from pre-Vulkan releases.
-- The footer shows the effective backend and device beside the version. Its dropdown may change among currently available devices only while model preparation, transcription queues, and semantic indexing are idle; both the browser and `/api/hardware/confirm` enforce this guard. A format-changing selection reopens the model gate before the main UI resumes.
+- The footer shows the effective backend and device beside the version. Its themed dropdown may change among currently available devices only while model preparation, transcription queues, and semantic indexing are idle; both the browser and `/api/hardware/confirm` enforce this guard. A format-changing selection reopens the model gate before the main UI resumes.
+- Model-progress polling must query only `/api/bootstrap`. Hardware inspection launches native CUDA/Vulkan probes and therefore runs once before bootstrap and once after readiness, never on every progress tick.
 - Model bootstrap selects only the speech artifact required by the resolved backend. Switching between CUDA/CPU and Vulkan may therefore download the same Turbo model in a different runtime format; it does not change the model family.
 - `GET /api/bootstrap` exposes overall status plus separate speech/meaning byte totals, downloaded bytes, percentages, transfer speed, estimated time remaining, current file, and errors.
 - `POST /api/bootstrap/start` starts or retries the background check.
@@ -264,7 +266,7 @@ Run after changes:
 ```bash
 ast-grep scan .
 ast-grep test
-.venv/bin/python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/validate_release_notes.py
+.venv/bin/python -m py_compile app_info.py hardware_check.py process_utils.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/validate_release_notes.py
 node --check static/app.js
 .venv/bin/python scripts/validate_release_notes.py
 .venv/bin/python -m unittest discover -s tests -v
@@ -303,6 +305,7 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 
 ### 2026-07-28
 
+- Replaced the Windows-native backend selects with themed dark menus, preserved the server-enforced busy-state guard, stopped model-progress polling from rerunning the Vulkan hardware probe every 500 ms, and applied `CREATE_NO_WINDOW` to runtime child processes so the packaged window no longer flashes consoles during setup or transcription.
 - Fixed the Windows frozen-runtime lookup for bundled Vulkan executables: PyInstaller onedir stores collected binaries under its `_MEIPASS` (`_internal`) root, not necessarily beside `Rothbald.exe`. Added an explicit hardware-preflight revision so upgrades from the broken probe build reopen backend confirmation once, and exposed the effective MLX/CUDA/Vulkan/CPU backend beside the footer version.
 - Bumped the feature release to `0.3.0.0` and added Windows AMD transcription through a bundled whisper.cpp Vulkan backend while preserving Whisper Large V3 Turbo. NVIDIA remains on faster-whisper/CUDA, Intel Vulkan is exposed as experimental, Auto prefers CUDA then discrete AMD then other Vulkan devices, and Vulkan failure retries the current part on whisper.cpp CPU.
 - Added exact Vulkan device probing, backend-specific model bootstrap, dynamic transcription signatures, pinned SHA-256-verified whisper.cpp/Vulkan SDK builds, PyInstaller bundling, Windows CI/release coverage, and the upstream whisper.cpp license.
