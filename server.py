@@ -1526,6 +1526,33 @@ def parse_range_header(header: str | None, size: int) -> tuple[int, int] | None:
     return (start, end)
 
 
+def backend_change_blocker() -> str | None:
+    """Protect active model/transcription work from a runtime backend switch."""
+    if not runtime_started:
+        return None
+    if model_manager.snapshot()["status"] in {"checking", "downloading"}:
+        return "Дочекайся завершення перевірки або завантаження моделей."
+    with db() as connection:
+        busy = connection.execute(
+            """SELECT EXISTS(
+                   SELECT 1 FROM videos
+                   WHERE status IN ('queued','processing')
+                      OR semantic_status IN ('pending','indexing')
+               )"""
+        ).fetchone()[0]
+    if busy:
+        return "Дочекайся завершення розпізнавання та індексації або зупини активну чергу."
+    return None
+
+
+def hardware_api_report() -> dict:
+    report = hardware_preflight.inspect()
+    blocker = backend_change_blocker()
+    report["backend_change_allowed"] = blocker is None
+    report["backend_change_blocker"] = blocker
+    return report
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "VideoSearch/0.3"
 
@@ -1538,7 +1565,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/bootstrap":
             return respond(self, model_manager.snapshot())
         if parsed.path == "/api/hardware":
-            return respond(self, hardware_preflight.inspect())
+            return respond(self, hardware_api_report())
         if parsed.path == "/api/app":
             return respond(self, application_info())
         if parsed.path == "/api/update":
@@ -1571,9 +1598,14 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 length = min(16_384, max(0, int(self.headers.get("Content-Length", "0") or 0)))
                 payload = json.loads(self.rfile.read(length) or b"{}")
-                report = hardware_preflight.confirm(str(payload.get("device", "auto")))
+                device = str(payload.get("device", "auto"))
+                current = hardware_preflight.inspect()
+                blocker = backend_change_blocker()
+                if current["accepted"] and device != current["selected_device"] and blocker:
+                    raise ValueError(blocker)
+                hardware_preflight.confirm(device)
                 start_runtime()
-                return respond(self, report)
+                return respond(self, hardware_api_report())
             except (ValueError, json.JSONDecodeError) as exc:
                 return respond(self, {"error": str(exc)}, 400)
         if path == "/api/bootstrap/start":

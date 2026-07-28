@@ -18,14 +18,21 @@ RECOMMENDED_RAM = 16 * GIB
 MINIMUM_DISK = 6 * GIB
 RECOMMENDED_DISK = 8 * GIB
 MINIMUM_CPU_CORES = 4
+PREFLIGHT_REVISION = 2
 
 
 def runtime_tool_path(name: str) -> Path | None:
     """Resolve a bundled or developer-built native helper without using PATH implicitly."""
     executable = f"{name}.exe" if sys.platform == "win32" else name
     override = os.environ.get(f"ROTHBALD_{name.upper().replace('-', '_')}_PATH")
+    frozen_root = (
+        Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+        if getattr(sys, "frozen", False)
+        else None
+    )
     candidates = [
         Path(override).expanduser() if override else None,
+        frozen_root / executable if frozen_root else None,
         Path(sys.executable).resolve().parent / executable if getattr(sys, "frozen", False) else None,
         Path(__file__).resolve().parent / "build" / "windows-tools" / executable,
     ]
@@ -193,6 +200,21 @@ def resolve_windows_device(selected: str, cuda_count: int, vulkan_gpus: list[dic
     return "cpu"
 
 
+def runtime_backend_label(resolved_device: str, devices: list[dict]) -> str:
+    """Return a concise user-facing description of the effective transcription backend."""
+    if resolved_device == "cpu":
+        return "CPU"
+    if resolved_device in {"auto", "apple"}:
+        return "MLX · Apple GPU"
+    device = next((item for item in devices if item.get("key") == resolved_device), None)
+    label = str((device or {}).get("label", resolved_device)).strip()
+    if resolved_device.startswith("cuda:"):
+        return f"CUDA · {label}"
+    if resolved_device.startswith("vulkan:"):
+        return f"Vulkan · {label.split(' (Vulkan', 1)[0]}"
+    return label
+
+
 class HardwarePreflight:
     """Detects whether the local machine can safely download and run the models."""
 
@@ -313,6 +335,7 @@ class HardwarePreflight:
             )
 
         identity = {
+            "preflight_revision": PREFLIGHT_REVISION,
             "platform": sys.platform,
             "machine": machine,
             "ram_tier": 0 if not ram else 1 if ram < MINIMUM_RAM else 2 if ram < RECOMMENDED_RAM else 3,
@@ -332,7 +355,12 @@ class HardwarePreflight:
             if sys.platform == "win32"
             else selected
         )
-        accepted = not blockers and saved.get("fingerprint") == fingerprint and bool(saved.get("accepted_at"))
+        accepted = (
+            not blockers
+            and saved.get("preflight_revision") == PREFLIGHT_REVISION
+            and saved.get("fingerprint") == fingerprint
+            and bool(saved.get("accepted_at"))
+        )
         performance = "blocked" if blockers else "limited" if warnings else "recommended"
         return {
             "platform": sys.platform,
@@ -348,6 +376,7 @@ class HardwarePreflight:
             "devices": devices,
             "selected_device": selected,
             "resolved_device": resolved_device,
+            "backend_label": runtime_backend_label(resolved_device, devices),
             "warnings": warnings,
             "blockers": blockers,
             "performance": performance,
@@ -365,6 +394,7 @@ class HardwarePreflight:
             raise ValueError("Обраний обчислювальний пристрій недоступний")
         self._save(
             {
+                "preflight_revision": PREFLIGHT_REVISION,
                 "fingerprint": report["fingerprint"],
                 "device": device,
                 "accepted_at": time.time(),
