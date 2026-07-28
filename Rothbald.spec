@@ -52,6 +52,19 @@ for executable in ("ffmpeg", "ffprobe"):
     if path:
         binaries.append((path, "."))
 
+if sys.platform == "win32":
+    for executable in ("whisper-cli.exe", "rothbald-vulkan-probe.exe"):
+        path = Path("build/windows-tools") / executable
+        if not path.is_file():
+            raise SystemExit(
+                f"{path} is missing; run scripts/build_whisper_cpp_windows.ps1 before PyInstaller"
+            )
+        binaries.append((str(path), "."))
+    whisper_license = Path("build/windows-tools/whisper.cpp-LICENSE.txt")
+    if not whisper_license.is_file():
+        raise SystemExit(f"{whisper_license} is missing from the prepared Vulkan backend")
+    datas.append((str(whisper_license), "licenses"))
+
 a = Analysis(
     ["rothbald.py"],
     pathex=[],

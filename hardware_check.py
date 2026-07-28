@@ -20,6 +20,21 @@ RECOMMENDED_DISK = 8 * GIB
 MINIMUM_CPU_CORES = 4
 
 
+def runtime_tool_path(name: str) -> Path | None:
+    """Resolve a bundled or developer-built native helper without using PATH implicitly."""
+    executable = f"{name}.exe" if sys.platform == "win32" else name
+    override = os.environ.get(f"ROTHBALD_{name.upper().replace('-', '_')}_PATH")
+    candidates = [
+        Path(override).expanduser() if override else None,
+        Path(sys.executable).resolve().parent / executable if getattr(sys, "frozen", False) else None,
+        Path(__file__).resolve().parent / "build" / "windows-tools" / executable,
+    ]
+    for candidate in candidates:
+        if candidate and candidate.is_file():
+            return candidate
+    return None
+
+
 def _physical_memory() -> int:
     if sys.platform == "win32":
         class MemoryStatus(ctypes.Structure):
@@ -112,6 +127,72 @@ def _cuda_device_count() -> int:
         return 0
 
 
+def _vulkan_gpus() -> list[dict]:
+    """Return the exact Vulkan device indices reported by the bundled probe."""
+    if sys.platform != "win32":
+        return []
+    probe = runtime_tool_path("rothbald-vulkan-probe")
+    if not probe:
+        return []
+    try:
+        result = subprocess.run(
+            [str(probe)],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8,
+        )
+        payload = json.loads(result.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    devices = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        try:
+            index = int(item["index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        name = str(item.get("name", "")).strip()
+        vendor = str(item.get("vendor", "other")).lower()
+        kind = str(item.get("type", "other")).lower()
+        if index < 0 or not name or kind == "cpu":
+            continue
+        devices.append(
+            {
+                "index": index,
+                "name": name,
+                "vendor": vendor if vendor in {"amd", "intel", "nvidia"} else "other",
+                "memory": max(0, int(item.get("memory", 0) or 0)),
+                "type": kind,
+            }
+        )
+    return devices
+
+
+def resolve_windows_device(selected: str, cuda_count: int, vulkan_gpus: list[dict]) -> str:
+    """Resolve Auto without changing the user's persisted preference."""
+    if selected != "auto":
+        return selected
+    if cuda_count > 0:
+        return "cuda:0"
+    accelerated = sorted(
+        (gpu for gpu in vulkan_gpus if gpu.get("vendor") != "nvidia"),
+        key=lambda gpu: (
+            gpu.get("vendor") != "amd",
+            gpu.get("type") != "discrete",
+            int(gpu.get("index", 0)),
+        ),
+    )
+    if accelerated:
+        return f"vulkan:{accelerated[0]['index']}"
+    return "cpu"
+
+
 class HardwarePreflight:
     """Detects whether the local machine can safely download and run the models."""
 
@@ -153,6 +234,7 @@ class HardwarePreflight:
         else:
             cuda_count = _cuda_device_count()
             gpus = _nvidia_gpus()
+            vulkan_gpus = _vulkan_gpus()
             devices = [
                 {
                     "key": "auto",
@@ -184,6 +266,19 @@ class HardwarePreflight:
                             "recommended": index == 0,
                         }
                     )
+            for gpu in vulkan_gpus:
+                if gpu["vendor"] == "nvidia":
+                    continue
+                memory = f" · {gpu['memory'] / GIB:.0f} ГБ" if gpu["memory"] else ""
+                experimental = " · експериментально" if gpu["vendor"] == "intel" else ""
+                devices.append(
+                    {
+                        "key": f"vulkan:{gpu['index']}",
+                        "label": f"{gpu['name']}{memory} (Vulkan{experimental})",
+                        "available": True,
+                        "recommended": cuda_count == 0 and gpu["vendor"] == "amd",
+                    }
+                )
 
         warnings = []
         blockers = []
@@ -208,8 +303,14 @@ class HardwarePreflight:
             warnings.append("Вільного місця менше рекомендованих 8 ГБ — для наступного оновлення моделей може забракнути запасу.")
         if cpu_cores < MINIMUM_CPU_CORES:
             warnings.append("Менше 4 логічних ядер — інтерфейс і розпізнавання можуть суттєво гальмувати.")
-        if sys.platform == "win32" and not any(item["key"].startswith("cuda:") and item["available"] for item in devices):
-            warnings.append("Сумісну NVIDIA CUDA не знайдено. Rothbald працюватиме на CPU, але розпізнавання буде повільнішим.")
+        if sys.platform == "win32" and not any(
+            item["available"] and item["key"].startswith(("cuda:", "vulkan:"))
+            for item in devices
+        ):
+            warnings.append(
+                "Сумісну GPU через CUDA або Vulkan не знайдено. "
+                "Rothbald працюватиме на CPU, але розпізнавання буде повільнішим."
+            )
 
         identity = {
             "platform": sys.platform,
@@ -226,6 +327,11 @@ class HardwarePreflight:
         valid_devices = {item["key"] for item in devices if item["available"]}
         if selected not in valid_devices:
             selected = "auto"
+        resolved_device = (
+            resolve_windows_device(selected, cuda_count, vulkan_gpus)
+            if sys.platform == "win32"
+            else selected
+        )
         accepted = not blockers and saved.get("fingerprint") == fingerprint and bool(saved.get("accepted_at"))
         performance = "blocked" if blockers else "limited" if warnings else "recommended"
         return {
@@ -241,6 +347,7 @@ class HardwarePreflight:
             "cpu_cores": cpu_cores,
             "devices": devices,
             "selected_device": selected,
+            "resolved_device": resolved_device,
             "warnings": warnings,
             "blockers": blockers,
             "performance": performance,
@@ -263,12 +370,13 @@ class HardwarePreflight:
                 "accepted_at": time.time(),
             }
         )
-        os.environ["ROTHBALD_DEVICE"] = device
-        return self.inspect()
+        confirmed = self.inspect()
+        os.environ["ROTHBALD_DEVICE"] = confirmed["resolved_device"]
+        return confirmed
 
     def apply_saved_device(self) -> bool:
         report = self.inspect()
         if not report["accepted"]:
             return False
-        os.environ["ROTHBALD_DEVICE"] = report["selected_device"]
+        os.environ["ROTHBALD_DEVICE"] = report["resolved_device"]
         return True

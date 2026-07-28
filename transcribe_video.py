@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
+
+from hardware_check import runtime_tool_path
+from model_manager import WINDOWS_VULKAN_WHISPER_PATTERNS, WINDOWS_VULKAN_WHISPER_REPO
 
 
 def resolve_faster_whisper_device(preference: str, cuda_count: int) -> tuple[str, int, str]:
@@ -68,6 +72,112 @@ def faster_transcribe(input_path: Path, model: str) -> dict:
     return {"text": " ".join(item["text"] for item in items), "language": "ru", "segments": items}
 
 
+def parse_whisper_cpp_result(payload: dict) -> dict:
+    segments = []
+    for item in payload.get("transcription", []):
+        if not isinstance(item, dict):
+            continue
+        offsets = item.get("offsets", {})
+        try:
+            start = float(offsets.get("from", 0)) / 1000
+            end = float(offsets.get("to", offsets.get("from", 0))) / 1000
+        except (AttributeError, TypeError, ValueError):
+            continue
+        text = str(item.get("text", "")).strip()
+        if text:
+            segments.append({"start": start, "end": end, "text": text})
+    result = payload.get("result", {})
+    language = str(result.get("language", "ru")) if isinstance(result, dict) else "ru"
+    return {
+        "text": " ".join(item["text"] for item in segments),
+        "language": language,
+        "segments": segments,
+    }
+
+
+def _local_whisper_cpp_model() -> Path:
+    from huggingface_hub import snapshot_download
+
+    snapshot = Path(
+        snapshot_download(
+            repo_id=WINDOWS_VULKAN_WHISPER_REPO,
+            allow_patterns=list(WINDOWS_VULKAN_WHISPER_PATTERNS),
+            local_files_only=True,
+        )
+    )
+    model = snapshot / WINDOWS_VULKAN_WHISPER_PATTERNS[0]
+    if not model.is_file():
+        raise RuntimeError("Локальну модель Whisper для Vulkan не знайдено")
+    return model
+
+
+def _run_whisper_cpp(command: list[str], environment: dict[str, str]) -> tuple[int, str]:
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=environment,
+    )
+    errors = []
+    assert process.stderr is not None
+    for line in process.stderr:
+        clean = line.rstrip()
+        if clean:
+            errors.append(clean)
+            print(clean, file=sys.stderr, flush=True)
+    return process.wait(), "\n".join(errors[-80:])
+
+
+def whisper_cpp_transcribe(input_path: Path, output_path: Path, preference: str) -> dict:
+    executable = runtime_tool_path("whisper-cli")
+    if not executable:
+        raise RuntimeError("Компонент Whisper Vulkan відсутній у цій збірці Rothbald")
+    try:
+        vulkan_index = int(preference.split(":", 1)[1])
+    except (IndexError, ValueError) as exc:
+        raise RuntimeError("Некоректно збережений вибір Vulkan GPU") from exc
+
+    output_prefix = output_path.with_suffix(".whispercpp")
+    generated_json = output_prefix.with_suffix(output_prefix.suffix + ".json")
+    base_command = [
+        str(executable),
+        "--model",
+        str(_local_whisper_cpp_model()),
+        "--file",
+        str(input_path),
+        "--language",
+        "ru",
+        "--beam-size",
+        "5",
+        "--output-json",
+        "--output-file",
+        str(output_prefix),
+        "--print-progress",
+    ]
+    environment = os.environ.copy()
+    environment["GGML_VK_VISIBLE_DEVICES"] = str(vulkan_index)
+    return_code, gpu_errors = _run_whisper_cpp(base_command, environment)
+    if return_code:
+        print(
+            "Vulkan GPU недоступна для цього файлу; повторюю розпізнавання на CPU.",
+            file=sys.stderr,
+            flush=True,
+        )
+        environment.pop("GGML_VK_VISIBLE_DEVICES", None)
+        return_code, cpu_errors = _run_whisper_cpp(base_command + ["--no-gpu"], environment)
+        if return_code:
+            detail = cpu_errors or gpu_errors or "невідома помилка whisper.cpp"
+            raise RuntimeError(detail[-3000:])
+    try:
+        payload = json.loads(generated_json.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("Whisper Vulkan не створив коректний результат") from exc
+    return parse_whisper_cpp_result(payload)
+
+
 def main() -> None:
     if len(sys.argv) != 4:
         raise SystemExit("usage: transcribe_video.py INPUT OUTPUT MODEL")
@@ -75,7 +185,13 @@ def main() -> None:
     output_path = Path(sys.argv[2])
     model = sys.argv[3]
 
-    result = faster_transcribe(input_path, model) if sys.platform == "win32" else mlx_transcribe(input_path, model)
+    preference = os.environ.get("ROTHBALD_DEVICE", "auto").lower()
+    if sys.platform == "win32" and preference.startswith("vulkan:"):
+        result = whisper_cpp_transcribe(input_path, output_path, preference)
+    elif sys.platform == "win32":
+        result = faster_transcribe(input_path, model)
+    else:
+        result = mlx_transcribe(input_path, model)
     payload = {
         "text": result.get("text", ""),
         "language": result.get("language", "ru"),

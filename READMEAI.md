@@ -21,7 +21,7 @@ Selecting a video only controls the player. It must never narrow the search scop
 
 - Apple Silicon uses `mlx-whisper` and is the primary optimized target.
 - Packaged macOS builds require macOS 14.0 or newer. The pinned PyTorch Apple Silicon wheel has a macOS 14 deployment target; do not advertise Ventura compatibility unless the dependency set changes and a real Ventura build is verified.
-- Windows x64 uses `faster-whisper` Turbo. The hardware gate persists `ROTHBALD_DEVICE=auto|cpu|cuda:N`; Auto prefers a CTranslate2-visible NVIDIA GPU and otherwise falls back to CPU/int8.
+- Windows x64 keeps one Whisper Large V3 Turbo model family with backend-specific local artifacts. NVIDIA uses `faster-whisper`/CTranslate2 through CUDA; AMD and non-NVIDIA Vulkan devices use the bundled `whisper.cpp` Vulkan backend; CPU remains the final fallback. Intel Vulkan is exposed as experimental until representative Intel hardware is verified.
 - Source launches require `ffmpeg` and `ffprobe`; packaged builds include the Python runtime, PySide6/QtWebEngine, both media binaries, and all backend dependencies.
 - Python virtual environment: `.venv/`.
 - Local URL: `http://127.0.0.1:8765`.
@@ -34,10 +34,11 @@ Selecting a video only controls the player. It must never narrow the search scop
 ## Main files
 
 - `server.py` — HTTP server, SQLite storage, folder scanning, queue, transcription orchestration, semantic indexing, search, and media range serving.
-- `transcribe_video.py` — isolated MLX Whisper transcription subprocess.
+- `transcribe_video.py` — isolated MLX, faster-whisper, or whisper.cpp transcription subprocess.
 - `prepare_models.py` / `prepare_semantic.py` — download and verify the Whisper and semantic models during setup.
 - `model_manager.py` — platform model manifest, remote revision check, resilient local verification, exact byte progress, and background downloads for the startup gate.
-- `hardware_check.py` — first-run architecture, OS, RAM, disk, CPU, CUDA-device detection, persisted acknowledgement, and compute-device preference.
+- `hardware_check.py` — first-run architecture, OS, RAM, disk, CPU, exact CUDA/Vulkan-device detection, persisted acknowledgement, and compute-device preference.
+- `tools/vulkan_probe/` / `scripts/build_whisper_cpp_windows.ps1` — exact Windows Vulkan-device enumeration and reproducible pinned whisper.cpp Vulkan build.
 - `rothbald.py` / `Rothbald.spec` — PySide6/QtWebEngine native desktop-window launcher and self-contained PyInstaller definition.
 - `assets/app-icon.png`, `.icns`, and `.ico` — rounded `Ro` application icon derived from the same Bradley Hand wordmark used by the UI.
 - `static/index.html` — application markup.
@@ -66,12 +67,14 @@ Scanning first marks the project's media unavailable and then marks every redisc
 ### Transcription
 
 - Apple engine/model: `mlx-whisper` with `mlx-community/whisper-large-v3-turbo`.
-- Windows engine/model: `faster-whisper` with `mobiuslabsgmbh/faster-whisper-large-v3-turbo`.
+- Windows NVIDIA/CPU engine/model artifact: `faster-whisper` with `mobiuslabsgmbh/faster-whisper-large-v3-turbo`.
+- Windows AMD/Intel/other non-NVIDIA GPU engine/model artifact: bundled `whisper.cpp` Vulkan with `ggerganov/whisper.cpp` `ggml-large-v3-turbo.bin`.
 - There is no UI model selector. Platform selection is automatic so saved transcription signatures never ambiguously mix engines.
 - Both transcription backends use the same fixed language hint for deterministic decoding.
 - Whisper runs in a subprocess so its MLX/Metal memory is released after each file.
 - Media is split into 30-minute core ranges with two-second overlap. `ffmpeg` extracts one temporary mono WAV at a time; completed parts are checkpointed in `transcription_parts`. Resume reuses all completed parts and repeats only the interrupted part. Midpoint ownership removes overlap duplicates when timestamps are reassembled.
 - Only Whisper may use Metal/GPU resources.
+- On Windows, Auto resolves in strict order: CTranslate2-visible NVIDIA CUDA, first non-NVIDIA Vulkan GPU, CPU. NVIDIA is deliberately not offered through Vulkan. A failed Vulkan invocation is retried once through whisper.cpp CPU mode for the same 30-minute part.
 - Progress is parsed from Whisper/tqdm stderr and saved in SQLite.
 - `ffmpeg` and Whisper run in their own process groups. Pause/Abort first terminate the complete group and force-kill it after five seconds if necessary, preventing orphan decoders.
 - If a managed subprocess produces no stderr activity for 20 minutes, the watchdog terminates it and marks the video as errored instead of hanging forever.
@@ -90,7 +93,9 @@ Important resource decision: semantic embeddings must run on CPU. Do not move th
 - The HTTP server starts before models are ready so the UI can show the model gate.
 - Model checks, downloads, queue workers, and semantic recovery do not start until the hardware preflight is accepted. Unsupported architecture/OS, less than 8 GB RAM, or less than 6 GB free space blocks model setup; lower-than-recommended resources produce an explicit slow-performance warning.
 - `GET /api/hardware` exposes the report and available compute devices. `POST /api/hardware/confirm` persists the hardware fingerprint plus device choice in `hardware.json`. A material hardware/driver/resource-tier change requires acknowledgement again.
-- macOS Apple Silicon always uses MLX on the Apple GPU. Windows offers Auto, CPU, and every NVIDIA device that CTranslate2 confirms is CUDA-available. Semantic embeddings remain CPU-only regardless of this choice.
+- macOS Apple Silicon always uses MLX on the Apple GPU. Windows offers Auto, CPU, every NVIDIA device that CTranslate2 confirms is CUDA-available, and every non-NVIDIA device returned by the bundled Vulkan probe. AMD is the supported Vulkan target; Intel is labeled experimental. Semantic embeddings remain CPU-only regardless of this choice.
+- Adding a newly detected CUDA/Vulkan device changes the hardware fingerprint and reopens the startup hardware gate before model bootstrap. A persisted `auto` choice resolves to the new preferred backend after confirmation; an explicit `cpu` choice remains selected until the user changes it. This is the migration path from pre-Vulkan releases.
+- Model bootstrap selects only the speech artifact required by the resolved backend. Switching between CUDA/CPU and Vulkan may therefore download the same Turbo model in a different runtime format; it does not change the model family.
 - `GET /api/bootstrap` exposes overall status plus separate speech/meaning byte totals, downloaded bytes, percentages, transfer speed, estimated time remaining, current file, and errors.
 - `POST /api/bootstrap/start` starts or retries the background check.
 - Every launch verifies local snapshots and checks the current Hugging Face revision when online. A changed revision downloads through the same progress UI and updates `model-manifest.json` only after both model snapshots verify.
@@ -246,6 +251,7 @@ The desktop launcher binds the local HTTP socket synchronously before it creates
 - External SSD disconnection causes media access errors but must not delete completed transcript data.
 - `setup.command` performs Apple-Silicon, Python ≥3.11, ffmpeg/ffprobe, and 8-GB-free-space checks and installs `requirements-macos.lock`; `setup.ps1` installs `requirements-windows.lock`. Model verification/download now belongs to the in-app model gate.
 - `setup.ps1` performs the corresponding Windows dependency checks and installs the platform-marked requirements.
+- Packaged Windows builds must run `scripts/build_whisper_cpp_windows.ps1` before PyInstaller. It prepares a pinned SHA-256-verified Vulkan SDK when no system SDK is available, downloads and verifies the pinned whisper.cpp source archive, builds static `whisper-cli.exe` with Vulkan plus `rothbald-vulkan-probe.exe`, and places both under ignored `build/windows-tools/` for bundling.
 - `.github/workflows/build.yml` tests and packages on native `macos-15` ARM64 and `windows-latest` runners for `main`, pull requests, and explicit manual dispatches. Pushing a release tag must not start a duplicate native build; the manually dispatched release workflow is the only post-tag build. Pull requests verify full packaging without uploading the large bundles; main/manual CI artifacts are retained for one day.
 - `.github/workflows/release.yml` is manual-only and uses the `release` environment. Its free Ubuntu preflight accepts only an existing four-part tag that equals `VERSION`, points at the dispatched current `main` commit, validates `RELEASE_NOTES.md`, and requires every Apple/updater credential before native jobs start. It installs platform-specific runtime/build locks, signs/notarizes/staples the Apple Silicon DMG, restores the runner's original Keychain search list, verifies the Windows bundle, generates checksums plus a signed `latest.json`, and creates a draft release whose body is the same `RELEASE_NOTES.md`. The draft must be published manually before `/releases/latest` exposes it to installed applications.
 - Build version metadata is generated from `VERSION` before PyInstaller. The packaged UI reads `/api/app`; never hardcode a displayed version in HTML or JavaScript.
@@ -255,6 +261,8 @@ The desktop launcher binds the local HTTP socket synchronously before it creates
 Run after changes:
 
 ```bash
+ast-grep scan .
+ast-grep test
 .venv/bin/python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/validate_release_notes.py
 node --check static/app.js
 .venv/bin/python scripts/validate_release_notes.py
@@ -294,6 +302,10 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 
 ### 2026-07-28
 
+- Bumped the feature release to `0.3.0.0` and added Windows AMD transcription through a bundled whisper.cpp Vulkan backend while preserving Whisper Large V3 Turbo. NVIDIA remains on faster-whisper/CUDA, Intel Vulkan is exposed as experimental, Auto prefers CUDA then discrete AMD then other Vulkan devices, and Vulkan failure retries the current part on whisper.cpp CPU.
+- Added exact Vulkan device probing, backend-specific model bootstrap, dynamic transcription signatures, pinned SHA-256-verified whisper.cpp/Vulkan SDK builds, PyInstaller bundling, Windows CI/release coverage, and the upstream whisper.cpp license.
+- Added and tested the pre-Vulkan upgrade path: newly detected CUDA/Vulkan devices invalidate the saved hardware fingerprint and reopen backend selection, while preserving an explicit CPU preference until the user changes it.
+- Adopted ast-grep with a project config, tested structural rule against unsafe subprocess shell invocation, CI scan/test gates, and documented review commands.
 - Prepared hotfix `0.2.0.2`: fixed post-download model verification on macOS and Windows by checking the exact Hugging Face commit SHA instead of an absent cached `main` ref. Complete already-downloaded snapshots are reused, and readiness now requires every configured model file pattern.
 - Prepared hotfix `0.2.0.1`: rebuilt the macOS ICNS through Apple `iconutil` from a complete standard iconset so Finder and Spotlight receive valid 16 px and 32 px representations.
 - Prevented the decorative model-gate background from creating phantom overflow, while preserving vertical scrolling on genuinely small screens. Added macOS iconset and model-gate overflow regression coverage.

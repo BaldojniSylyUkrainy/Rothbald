@@ -1,0 +1,7 @@
+id: no-subprocess-shell
+valid:
+  - subprocess.run(["ffmpeg", "-i", source], check=True)
+  - subprocess.Popen(command, stderr=subprocess.PIPE)
+invalid:
+  - subprocess.run("ffmpeg -i " + source, shell=True)
+  - subprocess.Popen(command, shell=True, stderr=subprocess.PIPE)

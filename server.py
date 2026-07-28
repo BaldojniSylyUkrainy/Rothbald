@@ -29,9 +29,8 @@ from hardware_check import HardwarePreflight
 from model_manager import (
     EMBEDDING_PATTERNS,
     EMBEDDING_REPO,
-    WHISPER_PATTERNS,
-    WHISPER_REPO,
     get_model_manager,
+    whisper_spec_for_device,
 )
 from updater import UpdateManager
 
@@ -56,9 +55,7 @@ TRANSCRIPT_DIR = DATA_DIR / "transcripts"
 STATIC_DIR = ROOT / "static"
 DB_PATH = DATA_DIR / "video_search.sqlite3"
 BACKUP_DIR = DATA_DIR / "backups"
-MODEL = WHISPER_REPO
 EMBEDDING_MODEL = EMBEDDING_REPO
-WHISPER_MODEL_FILES = list(WHISPER_PATTERNS)
 EMBEDDING_MODEL_FILES = list(EMBEDDING_PATTERNS)
 SEMANTIC_INDEX_VERSION = "natural-topic-v2"
 SEMANTIC_INDEX_ID = f"{EMBEDDING_MODEL}@{SEMANTIC_INDEX_VERSION}"
@@ -739,6 +736,8 @@ def relocate_project(project_id: str, folder: Path) -> dict:
 def progress_from_line(line: str) -> float | None:
     match = re.search(r"(?:^|\s)(\d{1,3})%\|", line)
     if not match:
+        match = re.search(r"\bprogress\s*=\s*(\d{1,3})%", line, re.IGNORECASE)
+    if not match:
         return None
     return min(1.0, max(0.0, int(match.group(1)) / 100))
 
@@ -1163,19 +1162,27 @@ def scan_project(project_id: str) -> int:
 
 
 def transcription_signature(row: sqlite3.Row) -> str:
-    value = f"{row['size']}:{row['mtime']:.6f}:{MODEL}:{TRANSCRIPTION_PART_SECONDS}"
+    value = (
+        f"{row['size']}:{row['mtime']:.6f}:"
+        f"{transcription_model()}:{TRANSCRIPTION_PART_SECONDS}"
+    )
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def transcription_model() -> str:
+    return whisper_spec_for_device().repo_id
+
+
 def transcription_command(input_path: Path, output_path: Path) -> list[str]:
+    model = transcription_model()
     if getattr(sys, "frozen", False):
-        return [sys.executable, "--transcribe", str(input_path), str(output_path), MODEL]
+        return [sys.executable, "--transcribe", str(input_path), str(output_path), model]
     return [
         sys.executable,
         str(SOURCE_ROOT / "transcribe_video.py"),
         str(input_path),
         str(output_path),
-        MODEL,
+        model,
     ]
 
 
@@ -1892,7 +1899,7 @@ def create_http_server() -> ThreadingHTTPServer:
 def main() -> None:
     server = create_http_server()
     print(f"Відкрий http://{HOST}:{PORT}")
-    print(f"Модель: {MODEL}")
+    print(f"Модель: {transcription_model()}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
