@@ -107,6 +107,21 @@ class ApplicationInfoTests(unittest.TestCase):
 
 
 class HardwarePreflightTests(unittest.TestCase):
+    def test_frozen_runtime_tool_is_resolved_from_pyinstaller_internal_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            internal = Path(temporary) / "_internal"
+            internal.mkdir()
+            probe = internal / "rothbald-vulkan-probe.exe"
+            probe.write_bytes(b"probe")
+            with mock.patch.object(hardware_check.sys, "platform", "win32"), \
+                 mock.patch.object(hardware_check.sys, "frozen", True, create=True), \
+                 mock.patch.object(hardware_check.sys, "_MEIPASS", str(internal), create=True), \
+                 mock.patch.object(hardware_check.sys, "executable", str(Path(temporary) / "Rothbald.exe")):
+                self.assertEqual(
+                    hardware_check.runtime_tool_path("rothbald-vulkan-probe"),
+                    probe,
+                )
+
     def test_limited_machine_requires_confirmation_and_persists_device(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, \
              mock.patch.object(hardware_check.sys, "platform", "win32"), \
@@ -226,6 +241,46 @@ class HardwarePreflightTests(unittest.TestCase):
                     upgraded["resolved_device"],
                     "vulkan:0" if saved_device == "auto" else "cpu",
                 )
+
+    def test_preflight_revision_reopens_matching_legacy_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(hardware_check.sys, "platform", "win32"), \
+             mock.patch.object(hardware_check.platform, "machine", return_value="AMD64"), \
+             mock.patch.object(hardware_check, "_physical_memory", return_value=16 * hardware_check.GIB), \
+             mock.patch.object(hardware_check, "_cuda_device_count", return_value=0), \
+             mock.patch.object(hardware_check, "_nvidia_gpus", return_value=[]), \
+             mock.patch.object(hardware_check, "_vulkan_gpus", return_value=[]), \
+             mock.patch.object(hardware_check.shutil, "disk_usage", return_value=mock.Mock(free=30 * hardware_check.GIB)), \
+             mock.patch.object(hardware_check.os, "cpu_count", return_value=8):
+            checker = HardwarePreflight(Path(temporary))
+            report = checker.inspect()
+            checker._save({
+                "fingerprint": report["fingerprint"],
+                "device": "auto",
+                "accepted_at": time.time(),
+            })
+            self.assertTrue(checker.inspect()["requires_confirmation"])
+            confirmed = checker.confirm("auto")
+            self.assertTrue(confirmed["accepted"])
+            self.assertEqual(
+                json.loads(checker.settings_path.read_text(encoding="utf-8"))["preflight_revision"],
+                hardware_check.PREFLIGHT_REVISION,
+            )
+
+    def test_backend_label_describes_effective_runtime(self) -> None:
+        devices = [
+            {"key": "cuda:0", "label": "NVIDIA RTX Test · 8 ГБ"},
+            {"key": "vulkan:1", "label": "AMD Radeon Test · 16 ГБ (Vulkan)"},
+        ]
+        self.assertEqual(hardware_check.runtime_backend_label("cpu", devices), "CPU")
+        self.assertEqual(
+            hardware_check.runtime_backend_label("cuda:0", devices),
+            "CUDA · NVIDIA RTX Test · 8 ГБ",
+        )
+        self.assertEqual(
+            hardware_check.runtime_backend_label("vulkan:1", devices),
+            "Vulkan · AMD Radeon Test · 16 ГБ",
+        )
 
     def test_windows_auto_prefers_cuda_over_vulkan(self) -> None:
         self.assertEqual(
@@ -401,6 +456,20 @@ class MigrationTests(TemporaryStorageTest):
 
 
 class QueueTests(TemporaryStorageTest):
+    def test_backend_change_is_blocked_while_processing_queue_is_active(self) -> None:
+        _project_id, video_id = self.add_project_and_video(paused=0)
+        with mock.patch.object(server, "runtime_started", True), \
+             mock.patch.object(server.model_manager, "snapshot", return_value={"status": "ready"}):
+            self.assertIn("розпізнавання", server.backend_change_blocker())
+            with server.db() as connection:
+                connection.execute(
+                    """UPDATE videos
+                       SET status='done',semantic_status='ready'
+                       WHERE id=?""",
+                    (video_id,),
+                )
+            self.assertIsNone(server.backend_change_blocker())
+
     def test_rescan_preserves_searchable_transcript_until_replacement_succeeds(self) -> None:
         project_id, video_id = self.add_project_and_video(paused=0)
         source = self.root / "one.mp4"

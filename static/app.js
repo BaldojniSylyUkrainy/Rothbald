@@ -245,6 +245,60 @@ function hardwareSize(bytes) {
   return value ? `${(value / 1024 ** 3).toFixed(value < 10 * 1024 ** 3 ? 1 : 0)} ГБ` : 'невідомо';
 }
 
+function renderBackendStatus(report) {
+  const node = $('#appBackend');
+  const select = $('#appBackendSelect');
+  node.textContent = report.backend_label || 'backend невідомий';
+  node.title = report.selected_device === 'auto'
+    ? `Автоматично вибрано: ${report.backend_label || report.resolved_device}`
+    : `Обрано: ${report.backend_label || report.resolved_device}`;
+  select.innerHTML = (report.devices || [])
+    .filter(device => device.available)
+    .map(device => `<option value="${esc(device.key)}" ${device.key === report.selected_device ? 'selected' : ''}>${esc(device.label)}</option>`)
+    .join('');
+  select.dataset.serverAllowed = report.backend_change_allowed === false ? '0' : '1';
+  select.dataset.blocker = report.backend_change_blocker || '';
+  updateBackendAvailability();
+}
+
+function updateBackendAvailability() {
+  const select = $('#appBackendSelect');
+  const projectBusy = state.projects.some(project =>
+    +project.busy_count > 0 || +project.semantic_busy_count > 0
+  );
+  select.disabled = !state.appReady || select.dataset.serverAllowed === '0' || projectBusy;
+  select.parentElement.title = select.disabled
+    ? select.dataset.blocker || (projectBusy
+      ? 'Backend не можна змінювати під час розпізнавання або індексації.'
+      : 'Backend стане доступним після підготовки застосунку.')
+    : 'Змінити backend розпізнавання';
+}
+
+async function changeBackend() {
+  const select = $('#appBackendSelect');
+  const device = select.value;
+  select.disabled = true;
+  try {
+    const report = await api('/api/hardware/confirm', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({device}),
+    });
+    state.appReady = false;
+    renderBackendStatus(report);
+    const gate = $('#modelGate');
+    gate.classList.remove('ready');
+    $('#hardwarePanel').classList.add('hidden');
+    $('#modelProgress').classList.remove('hidden');
+    await bootstrapModels();
+  } catch (error) {
+    toast(error.message);
+    try {
+      renderBackendStatus(await api('/api/hardware'));
+    } catch {}
+  }
+}
+
 function renderHardware(report) {
   $('#hardwarePanel').classList.remove('hidden');
   $('#modelProgress').classList.add('hidden');
@@ -334,6 +388,7 @@ async function bootstrapModels(retry = false) {
   const gate = $('#modelGate');
   try {
     const hardware = await api('/api/hardware');
+    renderBackendStatus(hardware);
     if (hardware.requires_confirmation) {
       renderHardware(hardware);
       return;
@@ -349,6 +404,7 @@ async function bootstrapModels(retry = false) {
       gate.classList.add('ready');
       await loadProjects();
       state.appReady = true;
+      renderBackendStatus(await api('/api/hardware'));
       maybeStartUpdateCheck();
       return;
     }
@@ -406,6 +462,7 @@ async function loadProjects(showErrors = true) {
     state.projects = await api('/api/projects');
     renderProjectHome();
     if (state.project && state.videos.length) renderQueue();
+    updateBackendAvailability();
   } catch (error) {
     if (showErrors) toast(error.message);
     throw error;
@@ -922,6 +979,7 @@ searchInput.addEventListener('keydown', event => { if (event.key === 'Enter') se
 $('#retryModels').addEventListener('click', () => bootstrapModels(true));
 $('#confirmHardware').addEventListener('click', confirmHardware);
 $('#recheckHardware').addEventListener('click', () => bootstrapModels());
+$('#appBackendSelect').addEventListener('change', changeBackend);
 $('#checkUpdates').addEventListener('click', () => checkForUpdates(true));
 $('#closeUpdateModal').addEventListener('click', () => $('#updateModal').classList.add('hidden'));
 $('#laterUpdate').addEventListener('click', () => $('#updateModal').classList.add('hidden'));
