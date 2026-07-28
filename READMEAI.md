@@ -113,7 +113,8 @@ Important resource decision: semantic embeddings must run on CPU. Do not move th
 - `latest.json` is signed with Ed25519. `update_manifest.py` contains only the public key and accepts only schema 1, four-part versions, the exact Rothbald GitHub release path, exact supported platform filenames, positive sizes, and lowercase SHA-256 values.
 - The matching private key must exist only as the protected `release` environment secret `ROTHBALD_UPDATER_PRIVATE_KEY` and in an encrypted owner backup. Never commit it or place it in a build artifact. Losing it after the first updater-enabled release prevents existing installations from trusting future manifests; rotating it requires a transition release signed by the existing key.
 - The updater streams the selected installer into the platform application-data `updates/` directory, rejects files larger or smaller than the signed size, verifies SHA-256 before the atomic rename, and verifies size/SHA-256 again immediately before native launch.
-- On Windows, Rothbald starts the verified Inno Setup executable and then closes so installation can replace files. On macOS, it opens the verified notarized DMG and leaves replacement in `Applications` to the user.
+- The updater modal has an explicit user-controlled visibility state. Polling may update a visible modal but must never reopen one the user closed. During background download the footer exposes progress; terminal success/error uses a toast plus footer action. `Пізніше` suppresses the same available version for 24 hours, while manual checking always overrides the snooze.
+- On Windows, Rothbald starts the verified Inno Setup executable and then closes so installation can replace files. On macOS, it opens the verified notarized DMG and also closes so Finder can replace the application safely; replacement in `Applications` remains a user action.
 - `RELEASE_NOTES.md` must begin with `# Rothbald <VERSION>`, contain a real section and bullet list, be substantive, and contain no placeholder markers. `scripts/validate_release_notes.py` is required in normal CI and release preflight. The release manifest embeds this exact text and GitHub Release uses the same file through `--notes-file`.
 - The updater modal renders a deliberately restricted Markdown subset: headings, paragraphs, unordered lists, and ordered lists. All text is escaped before HTML insertion.
 
@@ -268,6 +269,8 @@ ast-grep scan .
 ast-grep test
 .venv/bin/python -m py_compile app_info.py hardware_check.py process_utils.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/validate_release_notes.py
 node --check static/app.js
+node --check static/update_flow.js
+node --test tests/test_update_flow.cjs
 .venv/bin/python scripts/validate_release_notes.py
 .venv/bin/python -m unittest discover -s tests -v
 ```
@@ -305,6 +308,7 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 
 ### 2026-07-28
 
+- Rebuilt updater UI state handling: closing or minimizing a download is now respected, background progress moves to the footer, completion/error produces a toast without forced reopening, `Пізніше` snoozes one version for 24 hours, manual checking reopens the current state, download retries reuse the verified manifest, and the updater dialog now traps/restores focus and supports Escape. Added deterministic Node state-flow tests to CI and made macOS quit after opening the verified DMG for safe application replacement.
 - Replaced the Windows-native backend selects with themed dark menus, preserved the server-enforced busy-state guard, stopped model-progress polling from rerunning the Vulkan hardware probe every 500 ms, and applied `CREATE_NO_WINDOW` to runtime child processes so the packaged window no longer flashes consoles during setup or transcription.
 - Fixed the Windows frozen-runtime lookup for bundled Vulkan executables: PyInstaller onedir stores collected binaries under its `_MEIPASS` (`_internal`) root, not necessarily beside `Rothbald.exe`. Added an explicit hardware-preflight revision so upgrades from the broken probe build reopen backend confirmation once, and exposed the effective MLX/CUDA/Vulkan/CPU backend beside the footer version.
 - Bumped the feature release to `0.3.0.0` and added Windows AMD transcription through a bundled whisper.cpp Vulkan backend while preserving Whisper Large V3 Turbo. NVIDIA remains on faster-whisper/CUDA, Intel Vulkan is exposed as experimental, Auto prefers CUDA then discrete AMD then other Vulkan devices, and Vulkan failure retries the current part on whisper.cpp CPU.

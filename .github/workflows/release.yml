@@ -106,6 +106,8 @@ jobs:
           npx --yes --package=@ast-grep/cli@0.43.0 ast-grep test
           python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/validate_release_notes.py
           node --check static/app.js
+          node --check static/update_flow.js
+          node --test tests/test_update_flow.cjs
           python -m unittest discover -s tests -v
       - name: Build Windows application
         run: pyinstaller --noconfirm Rothbald.spec
@@ -179,6 +181,8 @@ jobs:
           npx --yes --package=@ast-grep/cli@0.43.0 ast-grep test
           python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/validate_release_notes.py
           node --check static/app.js
+          node --check static/update_flow.js
+          node --test tests/test_update_flow.cjs
           python -m unittest discover -s tests -v
       - name: Import Developer ID certificate
         run: |

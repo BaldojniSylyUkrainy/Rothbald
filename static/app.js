@@ -4,6 +4,7 @@ const state = {
   projectSequence: 0, videoSequence: 0, searchSequence: 0,
   searchControllers: [], searchLoading: { exact: false, semantic: false },
   appInfo: null, appReady: false, updateStarted: false, updateManual: false, updateTimer: null,
+  updatePollInFlight: false, updateActionPending: false, updateSnapshot: null, updateReturnFocus: null,
 };
 
 const $ = selector => document.querySelector(selector);
@@ -14,6 +15,9 @@ const playerTitle = $('#playerTitle');
 const playerPath = $('#playerPath');
 const searchInput = $('#searchInput');
 const results = $('#results');
+const updateFlow = globalThis.RothbaldUpdateFlow;
+const UPDATE_SNOOZE_KEY = 'rothbald-update-snooze';
+const UPDATE_SNOOZE_MS = 24 * 60 * 60 * 1000;
 
 const esc = value => String(value).replace(/[&<>'"]/g, character => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
@@ -130,15 +134,64 @@ function releaseNotesHtml(markdown) {
   return output.join('');
 }
 
-function showUpdateModal(status) {
+function updateSnoozeRecord() {
+  try {
+    return JSON.parse(localStorage.getItem(UPDATE_SNOOZE_KEY) || 'null');
+  } catch {
+    return null;
+  }
+}
+
+function snoozeUpdate(version) {
+  if (!version) return;
+  try {
+    localStorage.setItem(UPDATE_SNOOZE_KEY, JSON.stringify({ version, until: Date.now() + UPDATE_SNOOZE_MS }));
+  } catch {}
+}
+
+function updateModalIsOpen() {
+  return !$('#updateModal').classList.contains('hidden');
+}
+
+function setBackgroundInert(inert) {
+  $('main').toggleAttribute('inert', inert);
+  $('.app-footer').toggleAttribute('inert', inert);
+}
+
+function openUpdateModal() {
   const modal = $('#updateModal');
+  if (updateModalIsOpen()) return;
+  state.updateReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   modal.classList.remove('hidden');
+  setBackgroundInert(true);
+  $('#closeUpdateModal').focus();
+}
+
+function closeUpdateModal({ snooze = false } = {}) {
+  const status = state.updateSnapshot;
+  if (snooze && status?.status === 'available') snoozeUpdate(status.version);
+  state.updateManual = false;
+  $('#updateModal').classList.add('hidden');
+  setBackgroundInert(false);
+  if (status?.status === 'downloading') toast('Оновлення продовжує завантажуватися у фоні.');
+  const target = state.updateReturnFocus;
+  state.updateReturnFocus = null;
+  if (target?.isConnected && !target.disabled) target.focus();
+}
+
+function renderUpdateShortcut(status) {
+  const button = $('#checkUpdates');
+  button.textContent = updateFlow.shortcutLabel(status.status, status.percent);
+  button.classList.toggle('update-attention', ['downloaded', 'error'].includes(status.status));
+}
+
+function renderUpdateModal(status) {
   $('#updateTitle').textContent = status.version
     ? `Rothbald ${status.version}`
     : 'Оновлення Rothbald';
   $('#updateSummary').textContent = status.status === 'downloaded'
     ? status.platform === 'darwin-aarch64'
-      ? 'Оновлення перевірено. Відкрий DMG і заміни Rothbald у папці Applications.'
+      ? 'Оновлення перевірено. Rothbald відкриє DMG і закриється, щоб ти міг замінити застосунок у папці Applications.'
       : 'Оновлення перевірено. Installer закриє Rothbald після запуску.'
     : `Встановлена версія ${status.current_version}. Перед інсталяцією файл буде перевірено за підписом і SHA-256.`;
   $('#updateNotes').innerHTML = releaseNotesHtml(status.notes);
@@ -154,31 +207,59 @@ function showUpdateModal(status) {
   $('#updateError').classList.toggle('hidden', !status.error);
   $('#updateError').textContent = status.error || '';
   const install = $('#installUpdate');
-  install.disabled = status.status === 'downloading';
+  install.disabled = status.status === 'downloading' || state.updateActionPending;
   install.dataset.updateStatus = status.status;
   install.dataset.updatePlatform = status.platform;
   install.textContent = status.status === 'downloaded'
     ? status.platform === 'darwin-aarch64' ? 'Відкрити DMG' : 'Запустити installer'
     : status.status === 'downloading' ? 'Завантажую…'
       : status.status === 'error' ? 'Спробувати ще раз' : 'Завантажити оновлення';
+  $('#laterUpdate').textContent = updateFlow.laterLabel(status.status);
+}
+
+function notifyUpdate(decision, status) {
+  if (decision.notification === 'downloaded') {
+    toast(`Rothbald ${status.version} завантажено й перевірено. Відкрий оновлення через кнопку внизу.`);
+  } else if (decision.notification === 'error') {
+    toast(status.error || 'Не вдалося завантажити оновлення. Відкрий деталі через кнопку внизу.');
+  } else if (decision.notification === 'up_to_date') {
+    toast(`Установлена актуальна версія Rothbald ${status.current_version}.`);
+  }
+}
+
+function applyUpdateStatus(status, { manual = state.updateManual } = {}) {
+  const previousStatus = state.updateSnapshot?.status || '';
+  const snoozed = updateFlow.isSnoozed(updateSnoozeRecord(), status.version);
+  const decision = updateFlow.decide({
+    status,
+    previousStatus,
+    modalOpen: updateModalIsOpen(),
+    manual,
+    snoozed,
+  });
+  state.updateSnapshot = status;
+  renderUpdateShortcut(status);
+  if (decision.render) renderUpdateModal(status);
+  if (decision.open) openUpdateModal();
+  else if (updateModalIsOpen() && ['up_to_date', 'idle', 'disabled'].includes(status.status)) closeUpdateModal();
+  notifyUpdate(decision, status);
+  if (['up_to_date', 'downloaded'].includes(status.status)) state.updateManual = false;
+  return decision;
 }
 
 async function pollUpdate() {
   clearTimeout(state.updateTimer);
+  if (state.updatePollInFlight) return;
+  state.updatePollInFlight = true;
   try {
     const status = await api('/api/update');
     if (!status.enabled) return;
-    if (['available', 'downloading', 'downloaded'].includes(status.status)) showUpdateModal(status);
-    if (status.status === 'error' && state.updateManual) showUpdateModal(status);
-    if (status.status === 'up_to_date' && state.updateManual) {
-      toast(`Установлена актуальна версія Rothbald ${status.current_version}.`);
-      state.updateManual = false;
-    }
-    if (['checking', 'downloading'].includes(status.status)) {
-      state.updateTimer = setTimeout(pollUpdate, status.status === 'downloading' ? 500 : 800);
-    }
+    const decision = applyUpdateStatus(status);
+    if (decision.pollDelay) state.updateTimer = setTimeout(pollUpdate, decision.pollDelay);
   } catch (error) {
     if (state.updateManual) toast(error.message);
+  } finally {
+    state.updatePollInFlight = false;
   }
 }
 
@@ -186,9 +267,23 @@ async function checkForUpdates(manual = false) {
   state.updateManual = manual;
   try {
     await api('/api/update/check', { method: 'POST' });
-    pollUpdate();
+    await pollUpdate();
   } catch (error) {
     if (manual) toast(error.message);
+  }
+}
+
+async function openOrCheckUpdates() {
+  state.updateManual = true;
+  try {
+    const status = await api('/api/update');
+    if (['available', 'downloading', 'downloaded', 'error'].includes(status.status)) {
+      applyUpdateStatus(status, { manual: true });
+      return;
+    }
+    await checkForUpdates(true);
+  } catch (error) {
+    toast(error.message);
   }
 }
 
@@ -199,25 +294,35 @@ function maybeStartUpdateCheck() {
 }
 
 async function updatePrimaryAction() {
+  if (state.updateActionPending) return;
   const status = $('#installUpdate').dataset.updateStatus;
+  state.updateActionPending = true;
+  $('#installUpdate').disabled = true;
   try {
     if (status === 'downloaded') {
       await api('/api/update/install', { method: 'POST' });
       if ($('#installUpdate').dataset.updatePlatform === 'darwin-aarch64') {
-        toast('DMG відкрито. Перетягни Rothbald у Applications і заміни попередню версію.');
-        $('#updateModal').classList.add('hidden');
+        toast('DMG відкрито. Rothbald зараз закриється для безпечної заміни застосунку.');
       }
       return;
     }
     if (status === 'error') {
-      await checkForUpdates(true);
+      if (state.updateSnapshot?.retry_action === 'download') {
+        await api('/api/update/download', { method: 'POST' });
+        await pollUpdate();
+      } else {
+        await checkForUpdates(true);
+      }
       return;
     }
     await api('/api/update/download', { method: 'POST' });
-    pollUpdate();
+    await pollUpdate();
   } catch (error) {
-    $('#updateError').textContent = error.message;
-    $('#updateError').classList.remove('hidden');
+    const failed = { ...(state.updateSnapshot || {}), status: 'error', error: error.message, retry_action: 'check' };
+    applyUpdateStatus(failed, { manual: true });
+  } finally {
+    state.updateActionPending = false;
+    if (state.updateSnapshot) renderUpdateModal(state.updateSnapshot);
   }
 }
 
@@ -1030,9 +1135,28 @@ document.addEventListener('keydown', event => {
 $('#retryModels').addEventListener('click', () => bootstrapModels(true));
 $('#confirmHardware').addEventListener('click', confirmHardware);
 $('#recheckHardware').addEventListener('click', () => bootstrapModels());
-$('#checkUpdates').addEventListener('click', () => checkForUpdates(true));
-$('#closeUpdateModal').addEventListener('click', () => $('#updateModal').classList.add('hidden'));
-$('#laterUpdate').addEventListener('click', () => $('#updateModal').classList.add('hidden'));
+$('#checkUpdates').addEventListener('click', openOrCheckUpdates);
+$('#closeUpdateModal').addEventListener('click', () => closeUpdateModal());
+$('#laterUpdate').addEventListener('click', () => closeUpdateModal({ snooze: true }));
 $('#installUpdate').addEventListener('click', updatePrimaryAction);
+$('#updateModal').addEventListener('keydown', event => {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeUpdateModal();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  const controls = [...$('#updateModal').querySelectorAll('button:not(:disabled)')];
+  if (!controls.length) return;
+  const first = controls[0];
+  const last = controls[controls.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+});
 loadAppInfo();
 bootstrapModels();

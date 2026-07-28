@@ -65,6 +65,7 @@ class UpdateManager:
             "total": 0,
             "percent": 0,
             "error": None,
+            "retry_action": None,
         }
 
     def set_installer_callback(self, callback: Callable[[Path], bool] | None) -> None:
@@ -82,9 +83,9 @@ class UpdateManager:
         with self._lock:
             if not self.enabled:
                 return dict(self._state)
-            if self._state["status"] in {"checking", "downloading"}:
+            if self._state["status"] in {"checking", "downloading", "downloaded"}:
                 return dict(self._state)
-            self._state.update(status="checking", error=None)
+            self._state.update(status="checking", error=None, retry_action=None)
         threading.Thread(target=self._check, daemon=True, name="rothbald-update-check").start()
         return self.snapshot()
 
@@ -112,6 +113,7 @@ class UpdateManager:
                     total=0,
                     percent=100,
                     error=None,
+                    retry_action=None,
                 )
                 return
             self._candidate = {
@@ -127,10 +129,15 @@ class UpdateManager:
                 total=self._candidate["size"],
                 percent=0,
                 error=None,
+                retry_action=None,
             )
         except Exception as exc:
             self._candidate = None
-            self._set(status="error", error=f"Не вдалося перевірити оновлення: {exc}")
+            self._set(
+                status="error",
+                error=f"Не вдалося перевірити оновлення: {exc}",
+                retry_action="check",
+            )
 
     def start_download(self) -> dict:
         with self._lock:
@@ -142,7 +149,13 @@ class UpdateManager:
                 return dict(self._state)
             if not self._candidate:
                 raise ValueError("Немає перевіреного оновлення для завантаження")
-            self._state.update(status="downloading", downloaded=0, percent=0, error=None)
+            self._state.update(
+                status="downloading",
+                downloaded=0,
+                percent=0,
+                error=None,
+                retry_action=None,
+            )
         threading.Thread(target=self._download, daemon=True, name="rothbald-update-download").start()
         return self.snapshot()
 
@@ -182,9 +195,19 @@ class UpdateManager:
                 os.replace(temporary, destination)
             finally:
                 temporary.unlink(missing_ok=True)
-            self._set(status="downloaded", downloaded=downloaded, percent=100, error=None)
+            self._set(
+                status="downloaded",
+                downloaded=downloaded,
+                percent=100,
+                error=None,
+                retry_action=None,
+            )
         except Exception as exc:
-            self._set(status="error", error=f"Не вдалося завантажити оновлення: {exc}")
+            self._set(
+                status="error",
+                error=f"Не вдалося завантажити оновлення: {exc}",
+                retry_action="download",
+            )
 
     def install(self) -> None:
         with self._lock:

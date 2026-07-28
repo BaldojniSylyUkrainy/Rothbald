@@ -369,6 +369,7 @@ aside { min-width: 0; border-right: 1px solid var(--line); padding-right: 28px; 
   background: transparent; color: var(--muted); font-size: 10px; font-weight: 700;
 }
 .footer-update:hover { background: var(--paper); color: var(--text); }
+.footer-update.update-attention { border-color: #77777f; color: var(--text); }
 .update-modal {
   position: fixed; z-index: 200; inset: 0; display: grid; place-items: center;
   overflow: auto; padding: 24px; background: #050506d9; backdrop-filter: blur(10px);

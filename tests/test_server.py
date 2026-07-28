@@ -808,6 +808,55 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual(len(opened), 1)
             self.assertEqual(opened[0].read_bytes(), installer_payload)
 
+    def test_download_failure_is_visible_and_retryable_without_rechecking_manifest(self) -> None:
+        private_key, public_key = updater_key_pair()
+        installer_payload = b"retryable signed installer"
+        manifest = self.signed_manifest(private_key, "0.2.0.0", installer_payload)
+        manifest_payload = json.dumps(manifest).encode("utf-8")
+        downloads = 0
+
+        def opener(request, timeout):
+            nonlocal downloads
+            if request.full_url.endswith("latest.json"):
+                return FakeResponse(manifest_payload)
+            downloads += 1
+            if downloads == 1:
+                raise OSError("temporary network failure")
+            return FakeResponse(installer_payload)
+
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(update_manifest, "PUBLIC_KEY_BASE64", public_key):
+            manager = UpdateManager(
+                Path(temporary),
+                "0.1.2.0",
+                enabled=True,
+                platform_name="darwin",
+                urlopen=opener,
+            )
+            manager._check()
+            manager._download()
+            failed = manager.snapshot()
+            self.assertEqual(failed["status"], "error")
+            self.assertEqual(failed["retry_action"], "download")
+            self.assertIn("temporary network failure", failed["error"])
+
+            manager._download()
+            self.assertEqual(manager.snapshot()["status"], "downloaded")
+            self.assertEqual(downloads, 2)
+
+    def test_downloaded_update_is_not_downgraded_by_another_check(self) -> None:
+        manager = UpdateManager(
+            Path("unused"),
+            "0.1.2.0",
+            enabled=True,
+            platform_name="darwin",
+        )
+        manager._set(status="downloaded", version="0.2.0.0", percent=100)
+        with mock.patch("updater.threading.Thread") as thread:
+            snapshot = manager.start_check()
+        self.assertEqual(snapshot["status"], "downloaded")
+        thread.assert_not_called()
+
     def test_tampered_manifest_is_rejected(self) -> None:
         private_key, public_key = updater_key_pair()
         manifest = self.signed_manifest(private_key, "0.2.0.0", b"installer")
@@ -846,6 +895,14 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn('class="choice-menu choice-menu-up hidden"', markup)
         self.assertIn("bootstrapModels(false, false)", script)
         self.assertIn(".choice-option[aria-selected=\"true\"]", stylesheet)
+
+    def test_updater_state_module_loads_before_the_application_and_describes_errors(self) -> None:
+        markup = (ROOT / "static/index.html").read_text(encoding="utf-8")
+        self.assertLess(
+            markup.index('<script src="/static/update_flow.js"></script>'),
+            markup.index('<script src="/static/app.js"></script>'),
+        )
+        self.assertIn('aria-describedby="updateSummary updateError"', markup)
 
     def test_model_gate_does_not_force_viewport_scrollbars(self) -> None:
         stylesheet = (ROOT / "static/style.css").read_text(encoding="utf-8")

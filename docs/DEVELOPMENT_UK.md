@@ -25,6 +25,8 @@ ast-grep scan .
 ast-grep test
 python -m py_compile server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py rothbald.py
 node --check static/app.js
+node --check static/update_flow.js
+node --test tests/test_update_flow.cjs
 python -m unittest discover -s tests -v
 ```
 

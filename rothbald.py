@@ -108,6 +108,8 @@ def main() -> None:
                     QTimer.singleShot(750, qt_app.quit)
             else:
                 launched = QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+                if launched:
+                    QTimer.singleShot(750, qt_app.quit)
             with self._lock:
                 event, result = self._pending.pop(token)
             result["launched"] = launched

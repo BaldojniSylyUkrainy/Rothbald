@@ -142,7 +142,7 @@
     <p>Якщо щось не працює, пишіть на <a href="mailto:baldojnisyly@gmail.com">baldojnisyly@gmail.com</a></p>
     <p class="app-build"><button id="checkUpdates" class="footer-update hidden">Перевірити оновлення</button><span>Rothbald</span> <strong id="appVersion">версія…</strong><span class="app-build-separator">·</span><span id="appBackendPicker" class="app-backend-picker choice-picker" data-picker-kind="backend"><button id="appBackendSelect" class="app-backend-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="appBackendMenu"><strong id="appBackend" class="app-backend">backend…</strong><span aria-hidden="true">⌄</span></button><span id="appBackendMenu" class="choice-menu choice-menu-up hidden" role="listbox" aria-label="Backend розпізнавання"></span></span></p>
   </footer>
-  <div id="updateModal" class="update-modal hidden" role="dialog" aria-modal="true" aria-labelledby="updateTitle">
+  <div id="updateModal" class="update-modal hidden" role="dialog" aria-modal="true" aria-labelledby="updateTitle" aria-describedby="updateSummary updateError">
     <div class="update-dialog">
       <button id="closeUpdateModal" class="update-close" aria-label="Закрити">×</button>
       <p class="section-index">ОНОВЛЕННЯ ROTHBALD</p>
@@ -161,6 +161,7 @@
     </div>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/update_flow.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
