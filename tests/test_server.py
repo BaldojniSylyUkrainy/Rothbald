@@ -16,6 +16,7 @@ from unittest import mock
 
 import app_info
 import hardware_check
+import model_manager
 import rothbald
 import server
 import transcribe_video
@@ -469,6 +470,60 @@ class ModelBootstrapTests(unittest.TestCase):
             self.assertEqual(snapshot["bytes_per_second"], 5)
             snapshot["models"][0]["percent"] = 99
             self.assertEqual(manager.snapshot()["models"][0]["percent"], 50)
+
+    def test_downloaded_snapshot_is_verified_at_its_exact_revision(self) -> None:
+        spec = model_manager.ModelSpec(
+            "speech",
+            "Розпізнавання мовлення",
+            "example/speech",
+            ("config.json", "model.bin"),
+        )
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(model_manager, "MODEL_SPECS", (spec,)):
+            manager = ModelManager(Path(directory))
+            checked_revisions = []
+            manager._locally_ready = mock.Mock(
+                side_effect=lambda _spec, revision=None: (
+                    checked_revisions.append(revision) or revision == "remote-sha"
+                )
+            )
+            manager._remote_files = mock.Mock(
+                return_value=("remote-sha", [("config.json", 10), ("model.bin", 90)])
+            )
+            manager._download_file = mock.Mock()
+
+            manager._run()
+
+            self.assertEqual(manager.snapshot()["status"], "ready")
+            self.assertEqual(checked_revisions, [None, "remote-sha"])
+            manager._download_file.assert_not_called()
+            manifest = json.loads(manager.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["models"]["speech"]["revision"], "remote-sha")
+
+    def test_local_verification_requires_every_model_pattern(self) -> None:
+        spec = model_manager.ModelSpec(
+            "speech",
+            "Розпізнавання мовлення",
+            "example/speech",
+            ("config.json", "model.bin"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = Path(directory)
+            (snapshot / "config.json").write_text("{}", encoding="utf-8")
+            with mock.patch(
+                "huggingface_hub.snapshot_download",
+                return_value=str(snapshot),
+            ) as download:
+                self.assertFalse(ModelManager._locally_ready(spec, "exact-sha"))
+                (snapshot / "model.bin").write_bytes(b"model")
+                self.assertTrue(ModelManager._locally_ready(spec, "exact-sha"))
+
+            download.assert_called_with(
+                repo_id="example/speech",
+                revision="exact-sha",
+                allow_patterns=["config.json", "model.bin"],
+                local_files_only=True,
+            )
 
 
 class UpdaterTests(unittest.TestCase):

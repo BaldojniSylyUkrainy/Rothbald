@@ -1,6 +1,6 @@
 # READMEAI — project memory for Codex
 
-Last updated: 2026-07-27
+Last updated: 2026-07-28
 
 This file is the authoritative technical memory for the local video-search application. Read it completely before diagnosing or modifying the app. After every material change, update the affected sections and append a dated changelog entry.
 
@@ -94,6 +94,7 @@ Important resource decision: semantic embeddings must run on CPU. Do not move th
 - `GET /api/bootstrap` exposes overall status plus separate speech/meaning byte totals, downloaded bytes, percentages, transfer speed, estimated time remaining, current file, and errors.
 - `POST /api/bootstrap/start` starts or retries the background check.
 - Every launch verifies local snapshots and checks the current Hugging Face revision when online. A changed revision downloads through the same progress UI and updates `model-manifest.json` only after both model snapshots verify.
+- Local snapshot checks always use the exact remote commit SHA when online or the saved manifest revision when offline. Individual files are downloaded by commit SHA and do not necessarily create a cached `refs/main`; never verify those downloads through an implicit `main`. A snapshot is ready only when every required file pattern exists.
 - First launch requires the network. Later launches may proceed offline when both local snapshots are intact.
 - Queue work blocks on the model manager, while project and static endpoints stay available.
 
@@ -293,6 +294,7 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 
 ### 2026-07-28
 
+- Prepared hotfix `0.2.0.2`: fixed post-download model verification on macOS and Windows by checking the exact Hugging Face commit SHA instead of an absent cached `main` ref. Complete already-downloaded snapshots are reused, and readiness now requires every configured model file pattern.
 - Prepared hotfix `0.2.0.1`: rebuilt the macOS ICNS through Apple `iconutil` from a complete standard iconset so Finder and Spotlight receive valid 16 px and 32 px representations.
 - Prevented the decorative model-gate background from creating phantom overflow, while preserving vertical scrolling on genuinely small screens. Added macOS iconset and model-gate overflow regression coverage.
 
