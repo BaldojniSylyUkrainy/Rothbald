@@ -46,10 +46,16 @@ jobs:
         run: choco install ffmpeg innosetup --no-progress -y
       - name: Install Python dependencies
         run: python -m pip install -r ${{ matrix.lockfile }} -r ${{ matrix.build_lockfile }}
+      - name: Build Windows Vulkan transcription backend
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build_whisper_cpp_windows.ps1
       - name: Verify source and tests
         shell: bash
         run: |
           python scripts/prepare_build.py
+          npx --yes --package=@ast-grep/cli@0.43.0 ast-grep scan .
+          npx --yes --package=@ast-grep/cli@0.43.0 ast-grep test
           python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/validate_release_notes.py
           node --check static/app.js
           python scripts/validate_release_notes.py

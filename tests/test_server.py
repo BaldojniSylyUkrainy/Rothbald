@@ -22,7 +22,7 @@ import server
 import transcribe_video
 import update_manifest
 from hardware_check import HardwarePreflight
-from model_manager import ModelManager
+from model_manager import ModelManager, WINDOWS_VULKAN_WHISPER_REPO, whisper_spec_for_device
 from release_notes import validate_release_notes
 from scripts import generate_release_manifest
 from cryptography.hazmat.primitives import serialization
@@ -164,12 +164,150 @@ class HardwarePreflightTests(unittest.TestCase):
             self.assertTrue(any(device["key"] == "cuda:0" and device["available"] for device in report["devices"]))
             self.assertTrue(checker.confirm("cuda:0")["accepted"])
 
+    def test_windows_amd_and_intel_use_vulkan_while_nvidia_stays_on_cuda(self) -> None:
+        vulkan = [
+            {"index": 0, "name": "NVIDIA Test", "vendor": "nvidia", "memory": 8 * hardware_check.GIB},
+            {"index": 1, "name": "AMD Radeon Test", "vendor": "amd", "memory": 16 * hardware_check.GIB},
+            {"index": 2, "name": "Intel Arc Test", "vendor": "intel", "memory": 8 * hardware_check.GIB},
+        ]
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(hardware_check.sys, "platform", "win32"), \
+             mock.patch.object(hardware_check.platform, "machine", return_value="AMD64"), \
+             mock.patch.object(hardware_check, "_physical_memory", return_value=16 * hardware_check.GIB), \
+             mock.patch.object(hardware_check, "_cuda_device_count", return_value=0), \
+             mock.patch.object(hardware_check, "_nvidia_gpus", return_value=[]), \
+             mock.patch.object(hardware_check, "_vulkan_gpus", return_value=vulkan), \
+             mock.patch.object(hardware_check.shutil, "disk_usage", return_value=mock.Mock(free=30 * hardware_check.GIB)), \
+             mock.patch.object(hardware_check.os, "cpu_count", return_value=8), \
+             mock.patch.dict(os.environ, {}, clear=False):
+            checker = HardwarePreflight(Path(temporary))
+            report = checker.inspect()
+            keys = {device["key"] for device in report["devices"]}
+            self.assertNotIn("vulkan:0", keys)
+            self.assertIn("vulkan:1", keys)
+            self.assertIn("vulkan:2", keys)
+            self.assertEqual(report["resolved_device"], "vulkan:1")
+            confirmed = checker.confirm("auto")
+            self.assertEqual(confirmed["selected_device"], "auto")
+            self.assertEqual(os.environ["ROTHBALD_DEVICE"], "vulkan:1")
+
+    def test_existing_cpu_or_auto_choice_requires_confirmation_when_vulkan_appears(self) -> None:
+        amd_vulkan = [{
+            "index": 0,
+            "name": "AMD Radeon Test",
+            "vendor": "amd",
+            "memory": 16 * hardware_check.GIB,
+            "type": "discrete",
+        }]
+        for saved_device in ("auto", "cpu"):
+            with self.subTest(saved_device=saved_device), \
+                 tempfile.TemporaryDirectory() as temporary, \
+                 mock.patch.object(hardware_check.sys, "platform", "win32"), \
+                 mock.patch.object(hardware_check.platform, "machine", return_value="AMD64"), \
+                 mock.patch.object(hardware_check, "_physical_memory", return_value=16 * hardware_check.GIB), \
+                 mock.patch.object(hardware_check, "_cuda_device_count", return_value=0), \
+                 mock.patch.object(hardware_check, "_nvidia_gpus", return_value=[]), \
+                 mock.patch.object(hardware_check, "_vulkan_gpus", return_value=[]) as vulkan_probe, \
+                 mock.patch.object(
+                     hardware_check.shutil,
+                     "disk_usage",
+                     return_value=mock.Mock(free=30 * hardware_check.GIB),
+                 ), \
+                 mock.patch.object(hardware_check.os, "cpu_count", return_value=8):
+                checker = HardwarePreflight(Path(temporary))
+                self.assertTrue(checker.confirm(saved_device)["accepted"])
+
+                vulkan_probe.return_value = amd_vulkan
+                upgraded = checker.inspect()
+
+                self.assertTrue(upgraded["requires_confirmation"])
+                self.assertEqual(upgraded["selected_device"], saved_device)
+                self.assertEqual(
+                    upgraded["resolved_device"],
+                    "vulkan:0" if saved_device == "auto" else "cpu",
+                )
+
+    def test_windows_auto_prefers_cuda_over_vulkan(self) -> None:
+        self.assertEqual(
+            hardware_check.resolve_windows_device(
+                "auto",
+                1,
+                [{"index": 4, "vendor": "amd"}],
+            ),
+            "cuda:0",
+        )
+
+    def test_windows_auto_prefers_discrete_amd_over_intel_igpu(self) -> None:
+        self.assertEqual(
+            hardware_check.resolve_windows_device(
+                "auto",
+                0,
+                [
+                    {"index": 0, "vendor": "intel", "type": "integrated"},
+                    {"index": 1, "vendor": "amd", "type": "discrete"},
+                ],
+            ),
+            "vulkan:1",
+        )
+
     def test_transcription_device_resolution_has_safe_cpu_fallback(self) -> None:
         self.assertEqual(transcribe_video.resolve_faster_whisper_device("auto", 0), ("cpu", 0, "int8"))
         self.assertEqual(transcribe_video.resolve_faster_whisper_device("auto", 2), ("cuda", 0, "float16"))
         self.assertEqual(transcribe_video.resolve_faster_whisper_device("cuda:1", 2), ("cuda", 1, "float16"))
         with self.assertRaises(RuntimeError):
             transcribe_video.resolve_faster_whisper_device("cuda:3", 1)
+
+    def test_whisper_cpp_json_is_normalized_to_existing_segment_contract(self) -> None:
+        parsed = transcribe_video.parse_whisper_cpp_result(
+            {
+                "result": {"language": "ru"},
+                "transcription": [
+                    {"offsets": {"from": 1250, "to": 2750}, "text": " Тестовий фрагмент "},
+                    {"offsets": {"from": 3000, "to": 3500}, "text": "   "},
+                ],
+            }
+        )
+        self.assertEqual(parsed["language"], "ru")
+        self.assertEqual(
+            parsed["segments"],
+            [{"start": 1.25, "end": 2.75, "text": "Тестовий фрагмент"}],
+        )
+
+    def test_vulkan_transcription_retries_on_cpu_after_gpu_failure(self) -> None:
+        calls = []
+
+        def fake_run(command, environment):
+            calls.append((list(command), dict(environment)))
+            if len(calls) == 1:
+                return 1, "Vulkan initialization failed"
+            prefix = Path(command[command.index("--output-file") + 1])
+            prefix.with_suffix(prefix.suffix + ".json").write_text(
+                json.dumps(
+                    {
+                        "result": {"language": "ru"},
+                        "transcription": [
+                            {"offsets": {"from": 0, "to": 1000}, "text": "Готово"}
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return 0, ""
+
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(transcribe_video, "runtime_tool_path", return_value=Path("whisper-cli.exe")), \
+             mock.patch.object(transcribe_video, "_local_whisper_cpp_model", return_value=Path("turbo.bin")), \
+             mock.patch.object(transcribe_video, "_run_whisper_cpp", side_effect=fake_run):
+            root = Path(temporary)
+            result = transcribe_video.whisper_cpp_transcribe(
+                root / "input.wav",
+                root / "output.json",
+                "vulkan:3",
+            )
+        self.assertEqual(result["text"], "Готово")
+        self.assertEqual(calls[0][1]["GGML_VK_VISIBLE_DEVICES"], "3")
+        self.assertIn("--no-gpu", calls[1][0])
+        self.assertNotIn("GGML_VK_VISIBLE_DEVICES", calls[1][1])
 
 
 class TemporaryStorageTest(unittest.TestCase):
@@ -406,6 +544,13 @@ class QueueTests(TemporaryStorageTest):
 
 
 class SearchAndUtilityTests(unittest.TestCase):
+    def test_progress_parser_accepts_mlx_and_whisper_cpp_formats(self) -> None:
+        self.assertEqual(server.progress_from_line(" 42%|████"), 0.42)
+        self.assertEqual(
+            server.progress_from_line("whisper_print_progress_callback: progress =  65%"),
+            0.65,
+        )
+
     def test_http_server_owns_its_socket_before_reporting_ready(self) -> None:
         with mock.patch.object(server, "init_storage"), \
              mock.patch.object(server.hardware_preflight, "apply_saved_device", return_value=False), \
@@ -447,10 +592,15 @@ class SearchAndUtilityTests(unittest.TestCase):
         with mock.patch.object(server.sys, "frozen", True, create=True):
             command = server.transcription_command(Path("/tmp/input.wav"), Path("/tmp/output.json"))
         self.assertEqual(command[:2], [server.sys.executable, "--transcribe"])
-        self.assertEqual(command[-1], server.MODEL)
+        self.assertEqual(command[-1], server.transcription_model())
 
 
 class ModelBootstrapTests(unittest.TestCase):
+    def test_vulkan_keeps_turbo_but_selects_the_ggml_artifact(self) -> None:
+        spec = whisper_spec_for_device("vulkan:2", "win32")
+        self.assertEqual(spec.repo_id, WINDOWS_VULKAN_WHISPER_REPO)
+        self.assertEqual(spec.patterns, ("ggml-large-v3-turbo.bin",))
+
     def test_progress_snapshot_is_weighted_and_detached(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = ModelManager(Path(directory))
@@ -479,7 +629,7 @@ class ModelBootstrapTests(unittest.TestCase):
             ("config.json", "model.bin"),
         )
         with tempfile.TemporaryDirectory() as directory, \
-             mock.patch.object(model_manager, "MODEL_SPECS", (spec,)):
+             mock.patch.object(model_manager, "model_specs", return_value=(spec,)):
             manager = ModelManager(Path(directory))
             checked_revisions = []
             manager._locally_ready = mock.Mock(

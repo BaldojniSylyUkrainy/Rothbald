@@ -1,0 +1,14 @@
+id: no-subprocess-shell
+snapshots:
+  subprocess.Popen(command, shell=True, stderr=subprocess.PIPE):
+    labels:
+    - source: subprocess.Popen(command, shell=True, stderr=subprocess.PIPE)
+      style: primary
+      start: 0
+      end: 61
+  subprocess.run("ffmpeg -i " + source, shell=True):
+    labels:
+    - source: subprocess.run("ffmpeg -i " + source, shell=True)
+      style: primary
+      start: 0
+      end: 49

@@ -10,17 +10,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-IS_WINDOWS = sys.platform == "win32"
-WHISPER_REPO = (
-    "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
-    if IS_WINDOWS
-    else "mlx-community/whisper-large-v3-turbo"
-)
-WHISPER_PATTERNS = (
-    ("config.json", "model.bin", "tokenizer.json", "vocabulary.*")
-    if IS_WINDOWS
-    else ("config.json", "weights.safetensors")
-)
+WINDOWS_CUDA_WHISPER_REPO = "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
+WINDOWS_CUDA_WHISPER_PATTERNS = ("config.json", "model.bin", "tokenizer.json", "vocabulary.*")
+WINDOWS_VULKAN_WHISPER_REPO = "ggerganov/whisper.cpp"
+WINDOWS_VULKAN_WHISPER_PATTERNS = ("ggml-large-v3-turbo.bin",)
+MACOS_WHISPER_REPO = "mlx-community/whisper-large-v3-turbo"
+MACOS_WHISPER_PATTERNS = ("config.json", "weights.safetensors")
 EMBEDDING_REPO = "intfloat/multilingual-e5-large-instruct"
 EMBEDDING_PATTERNS = (
     "config.json",
@@ -40,10 +35,34 @@ class ModelSpec:
     patterns: tuple[str, ...]
 
 
-MODEL_SPECS = (
-    ModelSpec("speech", "Розпізнавання мовлення", WHISPER_REPO, WHISPER_PATTERNS),
-    ModelSpec("meaning", "Пошук за змістом", EMBEDDING_REPO, EMBEDDING_PATTERNS),
-)
+def whisper_spec_for_device(
+    device: str | None = None,
+    platform_name: str | None = None,
+) -> ModelSpec:
+    platform_name = platform_name or sys.platform
+    device = (device or os.environ.get("ROTHBALD_DEVICE", "auto")).lower()
+    if platform_name == "win32" and device.startswith("vulkan:"):
+        return ModelSpec(
+            "speech",
+            "Розпізнавання мовлення · Vulkan",
+            WINDOWS_VULKAN_WHISPER_REPO,
+            WINDOWS_VULKAN_WHISPER_PATTERNS,
+        )
+    if platform_name == "win32":
+        return ModelSpec(
+            "speech",
+            "Розпізнавання мовлення · CUDA/CPU",
+            WINDOWS_CUDA_WHISPER_REPO,
+            WINDOWS_CUDA_WHISPER_PATTERNS,
+        )
+    return ModelSpec("speech", "Розпізнавання мовлення", MACOS_WHISPER_REPO, MACOS_WHISPER_PATTERNS)
+
+
+def model_specs(device: str | None = None, platform_name: str | None = None) -> tuple[ModelSpec, ...]:
+    return (
+        whisper_spec_for_device(device, platform_name),
+        ModelSpec("meaning", "Пошук за змістом", EMBEDDING_REPO, EMBEDDING_PATTERNS),
+    )
 
 
 class ModelManager:
@@ -54,6 +73,7 @@ class ModelManager:
         self.manifest_path = state_dir / "model-manifest.json"
         self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
+        self._specs = model_specs()
         self._state = {
             "status": "idle",
             "phase": "Очікую",
@@ -75,9 +95,40 @@ class ModelManager:
                     "eta_seconds": None,
                     "bytes_per_second": 0,
                 }
-                for spec in MODEL_SPECS
+                for spec in self._specs
             ],
         }
+
+    def _configure_specs(self) -> None:
+        selected = model_specs()
+        with self._lock:
+            if selected == self._specs:
+                return
+            self._specs = selected
+            self._state.update(
+                status="idle",
+                phase="Очікую",
+                percent=0,
+                error=None,
+                offline=False,
+                eta_seconds=None,
+                bytes_per_second=0,
+                models=[
+                    {
+                        "key": spec.key,
+                        "label": spec.label,
+                        "repo": spec.repo_id,
+                        "status": "waiting",
+                        "percent": 0,
+                        "downloaded": 0,
+                        "total": 0,
+                        "detail": "Очікує перевірки",
+                        "eta_seconds": None,
+                        "bytes_per_second": 0,
+                    }
+                    for spec in self._specs
+                ],
+            )
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -87,6 +138,7 @@ class ModelManager:
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return
+            self._configure_specs()
             if self._state["status"] == "ready" and not force:
                 return
             self._state.update(status="checking", phase="Перевіряю актуальність", percent=1, error=None)
@@ -219,7 +271,7 @@ class ModelManager:
         try:
             remote: dict[str, tuple[str, list[tuple[str, int]]]] = {}
             remote_available = True
-            for spec in MODEL_SPECS:
+            for spec in self._specs:
                 manifest_revision = manifest.get("models", {}).get(spec.key, {}).get("revision")
                 local_ready = self._locally_ready(spec, manifest_revision)
                 self._set_model(
@@ -244,9 +296,10 @@ class ModelManager:
                     )
 
             self._set(offline=not remote_available)
-            for spec in MODEL_SPECS:
+            for spec in self._specs:
                 revision, files = remote[spec.key]
-                old_revision = manifest.get("models", {}).get(spec.key, {}).get("revision")
+                old_model = manifest.get("models", {}).get(spec.key, {})
+                old_revision = old_model.get("revision")
                 local_ready = self._locally_ready(
                     spec,
                     revision if remote_available else old_revision,
