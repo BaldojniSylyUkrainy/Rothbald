@@ -15,7 +15,7 @@
 
 1. Встанови ffmpeg: `winget install Gyan.FFmpeg`.
 2. Запусти `setup.ps1` у PowerShell.
-3. Для Vulkan GPU встанови Visual Studio 2022 C++ tools і запусти `scripts/build_whisper_cpp_windows.ps1`. Скрипт сам підготує зафіксований Vulkan SDK у `build/`, якщо системного SDK немає.
+3. Для Vulkan GPU встанови Visual Studio 2022 або новіші C++ tools і запусти `scripts/build_whisper_cpp_windows.ps1`. Скрипт сам підготує зафіксований Vulkan SDK у `build/`, якщо системного SDK немає, а CMake автоматично вибере доступну версію Visual Studio.
 4. Запусти `start.bat`.
 
 ## Перевірка

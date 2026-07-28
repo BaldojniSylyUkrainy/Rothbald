@@ -61,7 +61,6 @@ if (!(Test-Path -LiteralPath $SourceTree)) {
 cmake `
   -S $SourceTree `
   -B $WhisperBuild `
-  -G "Visual Studio 17 2022" `
   -A x64 `
   -DGGML_VULKAN=ON `
   -DGGML_NATIVE=OFF `
@@ -76,7 +75,6 @@ if ($LASTEXITCODE -ne 0) { throw "Could not build whisper.cpp" }
 cmake `
   -S (Join-Path $Root "tools\vulkan_probe") `
   -B $ProbeBuild `
-  -G "Visual Studio 17 2022" `
   -A x64
 if ($LASTEXITCODE -ne 0) { throw "Could not configure the Vulkan probe" }
 cmake --build $ProbeBuild --config Release
