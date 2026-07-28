@@ -126,16 +126,25 @@ class ModelManager:
         return any(fnmatch.fnmatch(filename, pattern) for pattern in patterns)
 
     @staticmethod
-    def _locally_ready(spec: ModelSpec) -> bool:
+    def _locally_ready(spec: ModelSpec, revision: str | None = None) -> bool:
         try:
             from huggingface_hub import snapshot_download
 
-            snapshot_download(
+            snapshot = Path(snapshot_download(
                 repo_id=spec.repo_id,
+                revision=revision,
                 allow_patterns=list(spec.patterns),
                 local_files_only=True,
+            ))
+            filenames = [
+                path.relative_to(snapshot).as_posix()
+                for path in snapshot.rglob("*")
+                if path.is_file()
+            ]
+            return all(
+                any(fnmatch.fnmatch(filename, pattern) for filename in filenames)
+                for pattern in spec.patterns
             )
-            return True
         except Exception:
             return False
 
@@ -211,7 +220,8 @@ class ModelManager:
             remote: dict[str, tuple[str, list[tuple[str, int]]]] = {}
             remote_available = True
             for spec in MODEL_SPECS:
-                local_ready = self._locally_ready(spec)
+                manifest_revision = manifest.get("models", {}).get(spec.key, {}).get("revision")
+                local_ready = self._locally_ready(spec, manifest_revision)
                 self._set_model(
                     spec.key,
                     status="checking",
@@ -236,9 +246,12 @@ class ModelManager:
             self._set(offline=not remote_available)
             for spec in MODEL_SPECS:
                 revision, files = remote[spec.key]
-                local_ready = self._locally_ready(spec)
                 old_revision = manifest.get("models", {}).get(spec.key, {}).get("revision")
-                needs_download = not local_ready or (remote_available and old_revision != revision)
+                local_ready = self._locally_ready(
+                    spec,
+                    revision if remote_available else old_revision,
+                )
+                needs_download = not local_ready
                 if not needs_download:
                     self._set_model(
                         spec.key, status="ready", percent=100, downloaded=100, total=100,
@@ -272,7 +285,7 @@ class ModelManager:
                             downloaded=min(total, completed),
                             percent=round(min(total, completed) / total * 100),
                         )
-                    if not self._locally_ready(spec):
+                    if not self._locally_ready(spec, revision):
                         raise RuntimeError(f"Не вдалося перевірити завантажену модель {spec.label}")
                     self._set_model(
                         spec.key, status="ready", percent=100, downloaded=total,
