@@ -17,7 +17,15 @@
       <div id="hardwarePanel" class="hardware-panel hidden">
         <div id="hardwareStats" class="hardware-stats"></div>
         <div id="hardwareMessages" class="hardware-messages"></div>
-        <label class="hardware-device" for="hardwareDevice"><span>Обчислювальний пристрій</span><select id="hardwareDevice"></select></label>
+        <div class="hardware-device">
+          <span>Обчислювальний пристрій</span>
+          <div id="hardwareDevicePicker" class="choice-picker" data-picker-kind="hardware">
+            <button id="hardwareDevice" class="choice-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="hardwareDeviceMenu">
+              <span class="choice-label">Обираю доступні пристрої…</span><span aria-hidden="true">⌄</span>
+            </button>
+            <div id="hardwareDeviceMenu" class="choice-menu hidden" role="listbox" aria-label="Обчислювальний пристрій"></div>
+          </div>
+        </div>
         <button id="confirmHardware" class="hardware-confirm">Підтвердити й підготувати моделі</button>
         <button id="recheckHardware" class="hardware-recheck hidden">Перевірити знову</button>
         <p class="hardware-note">Цей вибір можна автоматично переглянути після зміни обладнання або драйверів.</p>
@@ -132,7 +140,7 @@
   </main>
   <footer class="app-footer">
     <p>Якщо щось не працює, пишіть на <a href="mailto:baldojnisyly@gmail.com">baldojnisyly@gmail.com</a></p>
-    <p class="app-build"><button id="checkUpdates" class="footer-update hidden">Перевірити оновлення</button><span>Rothbald</span> <strong id="appVersion">версія…</strong><span class="app-build-separator">·</span><label class="app-backend-picker"><strong id="appBackend" class="app-backend">backend…</strong><span aria-hidden="true">⌄</span><select id="appBackendSelect" aria-label="Backend розпізнавання"></select></label></p>
+    <p class="app-build"><button id="checkUpdates" class="footer-update hidden">Перевірити оновлення</button><span>Rothbald</span> <strong id="appVersion">версія…</strong><span class="app-build-separator">·</span><span id="appBackendPicker" class="app-backend-picker choice-picker" data-picker-kind="backend"><button id="appBackendSelect" class="app-backend-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="appBackendMenu"><strong id="appBackend" class="app-backend">backend…</strong><span aria-hidden="true">⌄</span></button><span id="appBackendMenu" class="choice-menu choice-menu-up hidden" role="listbox" aria-label="Backend розпізнавання"></span></span></p>
   </footer>
   <div id="updateModal" class="update-modal hidden" role="dialog" aria-modal="true" aria-labelledby="updateTitle">
     <div class="update-dialog">

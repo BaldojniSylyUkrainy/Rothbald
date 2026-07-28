@@ -32,6 +32,7 @@ from model_manager import (
     get_model_manager,
     whisper_spec_for_device,
 )
+from process_utils import quiet_process_options
 from updater import UpdateManager
 
 
@@ -499,6 +500,7 @@ def terminate_process_group(process: subprocess.Popen) -> None:
             subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+                **quiet_process_options(),
             )
         except OSError:
             process.terminate()
@@ -517,6 +519,7 @@ def terminate_process_group(process: subprocess.Popen) -> None:
                     subprocess.run(
                         ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+                        **quiet_process_options(),
                     )
                 except OSError:
                     process.kill()
@@ -611,6 +614,7 @@ def media_duration(path: Path) -> float:
         result = subprocess.run(
             [bundled_tool("ffprobe"), "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
             capture_output=True, text=True, check=False, timeout=FFPROBE_TIMEOUT_SECONDS,
+            **quiet_process_options(),
         )
     except (subprocess.TimeoutExpired, OSError):
         return 0.0
@@ -1209,7 +1213,7 @@ def run_managed_process(
 ) -> None:
     process_options = {}
     if sys.platform == "win32":
-        process_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        process_options.update(quiet_process_options(new_process_group=True))
     else:
         process_options["start_new_session"] = True
     process = subprocess.Popen(

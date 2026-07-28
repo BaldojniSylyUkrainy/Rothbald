@@ -11,6 +11,8 @@ import sys
 import time
 from pathlib import Path
 
+from process_utils import quiet_process_options
+
 
 GIB = 1024 ** 3
 MINIMUM_RAM = 8 * GIB
@@ -69,6 +71,7 @@ def _physical_memory() -> int:
                 capture_output=True,
                 text=True,
                 timeout=3,
+                **quiet_process_options(),
             )
             return int(result.stdout.strip())
         except (OSError, ValueError, subprocess.SubprocessError):
@@ -107,6 +110,7 @@ def _nvidia_gpus() -> list[dict]:
             capture_output=True,
             text=True,
             timeout=4,
+            **quiet_process_options(),
         )
     except (OSError, subprocess.SubprocessError):
         return []
@@ -150,6 +154,7 @@ def _vulkan_gpus() -> list[dict]:
             encoding="utf-8",
             errors="replace",
             timeout=8,
+            **quiet_process_options(),
         )
         payload = json.loads(result.stdout)
     except (OSError, ValueError, subprocess.SubprocessError):
