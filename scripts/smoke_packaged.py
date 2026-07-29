@@ -21,6 +21,10 @@ def free_port() -> int:
         return int(listener.getsockname()[1])
 
 
+def is_rothbald_document(markup: str) -> bool:
+    return "<title>Rothbald" in markup and 'id="modelGate"' in markup
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Start a packaged Rothbald bundle and verify its local UI/API.")
     parser.add_argument("executable", type=Path)
@@ -62,7 +66,7 @@ def main() -> None:
                         markup = response.read().decode("utf-8")
                     if info.get("name") != "Rothbald" or info.get("version") != version:
                         raise RuntimeError(f"unexpected application metadata: {info}")
-                    if "<title>Rothbald</title>" not in markup:
+                    if not is_rothbald_document(markup):
                         raise RuntimeError("packaged UI did not return the Rothbald document")
                     print(f"Packaged Rothbald {version} started and served its native UI.")
                     return

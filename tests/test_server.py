@@ -26,6 +26,7 @@ from hardware_check import HardwarePreflight
 from model_manager import ModelManager, WINDOWS_VULKAN_WHISPER_REPO, whisper_spec_for_device
 from release_notes import validate_release_notes
 from scripts import generate_release_manifest
+from scripts import smoke_packaged
 from scripts import versioning
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -1029,6 +1030,11 @@ class UpdaterTests(unittest.TestCase):
 
 
 class ReleaseContractTests(unittest.TestCase):
+    def test_packaged_smoke_accepts_the_real_product_title(self) -> None:
+        markup = (ROOT / "static/index.html").read_text(encoding="utf-8")
+        self.assertTrue(smoke_packaged.is_rothbald_document(markup))
+        self.assertFalse(smoke_packaged.is_rothbald_document("<title>Not Rothbald</title>"))
+
     def test_version_bump_updates_release_inputs_and_notes_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

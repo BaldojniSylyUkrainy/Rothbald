@@ -314,6 +314,10 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 
 ## Changelog
 
+### 2026-07-29 — packaged smoke title hotfix
+
+- Bumped the fix release from `0.4.0.0` to `0.4.1.0`. The packaged macOS and Windows applications had built and served the correct UI, but the new smoke gate required an exact short `<title>` that did not match the real extended product title. The gate now recognizes the real title plus the application shell marker, with regression coverage.
+
 ### 2026-07-29 — MVP review hardening and version contract
 
 - Closed the local HTTP DNS-rebinding read boundary, added fail-closed unknown-resource checks, stopped clean `SystemExit` from creating crash reports, and made the semantic retrieval instruction language-neutral.

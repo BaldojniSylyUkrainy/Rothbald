@@ -1,4 +1,8 @@
-# Rothbald 0.4.0.0
+# Rothbald 0.4.1.0
+
+## Перевірка збірки
+
+- Виправлено smoke-перевірку готових macOS і Windows застосунків: вона приймає повний продуктовий заголовок Rothbald та все одно вимагає справжню оболонку інтерфейсу й правильну вбудовану версію.
 
 ## Мова та пошук
 
@@ -14,5 +18,5 @@
 
 ## Релізний процес
 
-- Версія `0.4.0.0` надходить у footer, macOS bundle, Windows executable, installer та updater з єдиного файла `VERSION`.
+- Версія `0.4.1.0` надходить у footer, macOS bundle, Windows executable, installer та updater з єдиного файла `VERSION`.
 - Додано команду, яка за правилами Rothbald готує наступну fix або feature версію та синхронізує стандартний tag у ручному release workflow.
