@@ -4,14 +4,16 @@
 в macOS bundle, Windows executable та `/api/app`; footer читає її з API й не має
 захардкодженого номера.
 
-Формат: `MAJOR.MINOR.PATCH.0`. Останній компонент зарезервований і лишається `0`.
+Формат: `MAJOR.MINOR.PATCH.HOTFIX`.
 
+- термінове точкове виправлення: `0.3.1.0` → `0.3.1.1`;
 - виправлення: `0.3.1.0` → `0.3.2.0`;
 - нова функція: `0.3.1.0` → `0.4.0.0`.
 
 Перед релізним commit виконайте одну з команд:
 
 ```bash
+python scripts/versioning.py hotfix
 python scripts/versioning.py fix
 python scripts/versioning.py feature
 ```

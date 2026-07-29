@@ -263,8 +263,9 @@ The desktop launcher binds the local HTTP socket synchronously before it creates
 - `setup.ps1` performs the corresponding Windows dependency checks and installs the platform-marked requirements.
 - Packaged Windows builds must run `scripts/prepare_ffmpeg_windows.ps1` and `scripts/build_whisper_cpp_windows.ps1` before PyInstaller. The former resolves and validates the real Chocolatey FFmpeg binaries instead of its runner-local shims. The latter prepares a pinned SHA-256-verified Vulkan SDK when no system SDK is available, downloads and verifies the pinned whisper.cpp source archive, builds static `whisper-cli.exe` with Vulkan plus `rothbald-vulkan-probe.exe`, and places all runtime tools under ignored `build/windows-tools/` for bundling.
 - `.github/workflows/build.yml` tests and packages on native `macos-15` ARM64 and `windows-latest` runners for `main`, pull requests, and explicit manual dispatches. Pushing a release tag must not start a duplicate native build; the manually dispatched release workflow is the only post-tag build. Pull requests verify full packaging without uploading the large bundles; main/manual CI artifacts are retained for one day. Python installs require hashes, the JavaScript build tool has an npm lock, and every GitHub Action is pinned to a full commit SHA.
+- The packaged runtime smoke imports the Windows faster-whisper backend before checking native media tools and the UI. Keep backend-only transitive imports such as `requests` explicit in the Windows runtime lock so a missing PyInstaller module fails CI before an installer is published.
 - `.github/workflows/release.yml` is manual-only and uses the `release` environment. Its free Ubuntu preflight accepts only an existing four-part tag that equals `VERSION`, points at the dispatched current `main` commit, validates `RELEASE_NOTES.md`, and requires every Apple and updater credential before native jobs start. It installs platform-specific runtime/build locks, launches a smoke test against each packaged native executable, builds an intentionally unsigned Windows Inno Setup installer, signs/notarizes/staples the Apple Silicon DMG, restores the runner's original Keychain search list, generates checksums plus a signed `latest.json`, and creates a draft release whose body is the same `RELEASE_NOTES.md`. The draft must be published manually before `/releases/latest` exposes it to installed applications.
-- Build version metadata is generated from `VERSION` before PyInstaller. The packaged UI reads `/api/app`; never hardcode a displayed version in HTML or JavaScript. `scripts/versioning.py fix|feature` implements the documented `MAJOR.MINOR.PATCH.0` policy and synchronizes `VERSION`, release notes, and the manual workflow tag default; `check` is a CI contract.
+- Build version metadata is generated from `VERSION` before PyInstaller. The packaged UI reads `/api/app`; never hardcode a displayed version in HTML or JavaScript. `scripts/versioning.py hotfix|fix|feature` implements the documented `MAJOR.MINOR.PATCH.HOTFIX` policy and synchronizes `VERSION`, release notes, and the manual workflow tag default; `check` is a CI contract.
 
 ### Local HTTP boundary
 
@@ -313,12 +314,18 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 
 - Native CI bundles are prepared through PyInstaller and GitHub Actions; the manual release path additionally signs and notarizes Apple Silicon.
 - The bundle opens as a standalone PySide6/QtWebEngine desktop window, not as a browser tab. PyInstaller embeds the platform-specific Dock/executable icon.
-- A native single-instance channel focuses the existing window on a second launch. Long active work holds an OS sleep assertion; idle Rothbald does not keep the computer awake.
+- A native single-instance channel prevents duplicate desktop processes. Windows explicitly restores and focuses the existing window; macOS relies on LaunchServices activation and never calls `raise_()` or `activateWindow()` from the duplicate-instance channel, so background/repeated launches cannot pull Rothbald over the user's current app. Long active work holds an OS sleep assertion; idle Rothbald does not keep the computer awake.
 - Every user-initiated native window close requires confirmation. The dialog lists live model/update downloads, transcription and semantic queues, and media checks; `Не закривати` is the default and Escape action. A verified updater installer handoff is the sole intentional bypass.
 - Model updates are checked in-app against published Hugging Face revisions and downloaded with exact byte progress, speed, and ETA.
 - Draft GitHub Release hosting, embedded build identity, macOS Developer ID signing/notarization, signed application-update manifests, verified in-app downloads, and native installer handoff are implemented. Windows artifacts are intentionally unsigned until a trusted Authenticode certificate exists and may trigger SmartScreen; the updater manifest remains Ed25519-signed independently.
 
 ## Changelog
+
+### 2026-07-29 — hotfix 0.5.0.1
+
+- Added the missing explicit Windows `requests` runtime dependency required by faster-whisper and extended the packaged smoke gate to import the transcription backend before installer assembly.
+- Stopped duplicate-instance signals from forcibly raising and activating the Rothbald window on macOS; Windows keeps its explicit restore-and-focus behavior.
+- Extended the version helper and release documentation with a real fourth-component hotfix bump.
 
 ### 2026-07-29 — full MVP reliability hardening
 

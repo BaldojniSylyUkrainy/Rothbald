@@ -112,7 +112,7 @@ gh secret set ROTHBALD_UPDATER_PRIVATE_KEY --env release \
 
 ## 5. Запуск релізу
 
-1. Запустіть `python scripts/versioning.py fix` для виправлення або `python scripts/versioning.py feature` для нової функції. Скрипт синхронізує `VERSION`, заголовок notes і стандартне значення tag у workflow. Замініть TODO у `RELEASE_NOTES.md` реальним описом до commit.
+1. Запустіть `python scripts/versioning.py hotfix` для термінового точкового виправлення, `python scripts/versioning.py fix` для звичайного виправлення або `python scripts/versioning.py feature` для нової функції. Скрипт синхронізує `VERSION`, заголовок notes і стандартне значення tag у workflow. Замініть TODO у `RELEASE_NOTES.md` реальним описом до commit.
 2. Дочекайтесь зеленого `test-and-build` на `main`: звичайний CI також перевіряє notes.
 3. Створіть annotated tag `v` + значення `VERSION`, наприклад `v0.2.0.0`, саме на зеленому `main`, і запуште його.
 4. Tag push навмисно не запускає повторний `test-and-build`.

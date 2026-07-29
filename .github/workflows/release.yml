@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing green-main release tag, for example vX.Y.Z.0"
-        default: "v0.5.0.0"
+        description: "Existing green-main release tag, for example vX.Y.Z.H"
+        default: "v0.5.0.1"
         required: true
         type: string
 

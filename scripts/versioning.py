@@ -18,11 +18,8 @@ def read_version() -> tuple[int, int, int, int]:
     value = VERSION_FILE.read_text(encoding="utf-8").strip()
     match = VERSION_PATTERN.fullmatch(value)
     if not match:
-        raise SystemExit("VERSION must use MAJOR.MINOR.PATCH.0")
-    components = tuple(int(part) for part in match.groups())
-    if components[3] != 0:
-        raise SystemExit("The fourth version component is reserved and must stay 0")
-    return components
+        raise SystemExit("VERSION must use MAJOR.MINOR.PATCH.HOTFIX")
+    return tuple(int(part) for part in match.groups())
 
 
 def format_version(parts: tuple[int, int, int, int]) -> str:
@@ -30,7 +27,9 @@ def format_version(parts: tuple[int, int, int, int]) -> str:
 
 
 def next_version(current: tuple[int, int, int, int], kind: str) -> tuple[int, int, int, int]:
-    major, minor, patch, _reserved = current
+    major, minor, patch, hotfix = current
+    if kind == "hotfix":
+        return major, minor, patch, hotfix + 1
     if kind == "fix":
         return major, minor, patch + 1, 0
     if kind == "feature":
@@ -68,7 +67,7 @@ def bump(kind: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Keep the Rothbald release version contract synchronized.")
-    parser.add_argument("action", choices=("fix", "feature", "check"))
+    parser.add_argument("action", choices=("hotfix", "fix", "feature", "check"))
     args = parser.parse_args()
     if args.action == "check":
         version = check_contract()

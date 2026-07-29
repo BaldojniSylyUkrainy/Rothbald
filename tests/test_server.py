@@ -137,6 +137,18 @@ class ApplicationInfoTests(unittest.TestCase):
                 str(Path("/app/runtime")),
             )
 
+    def test_duplicate_instance_does_not_force_macos_window_to_front(self) -> None:
+        self.assertFalse(rothbald.duplicate_instance_should_focus("darwin"))
+        self.assertTrue(rothbald.duplicate_instance_should_focus("win32"))
+
+    def test_packaged_runtime_smoke_imports_transcription_backend(self) -> None:
+        completed = mock.Mock(returncode=0)
+        with mock.patch.object(transcribe_video, "verify_runtime_dependencies") as verify, \
+             mock.patch.object(server, "bundled_tool", side_effect=lambda name: name), \
+             mock.patch.object(rothbald.subprocess, "run", return_value=completed):
+            rothbald.runtime_smoke()
+        verify.assert_called_once_with()
+
 
 class HardwarePreflightTests(unittest.TestCase):
     def test_windows_child_process_flags_hide_console_windows(self) -> None:
@@ -1174,6 +1186,8 @@ class ReleaseContractTests(unittest.TestCase):
             with mock.patch.object(versioning, "VERSION_FILE", version_file), \
                  mock.patch.object(versioning, "RELEASE_NOTES", notes), \
                  mock.patch.object(versioning, "RELEASE_WORKFLOW", workflow):
+                self.assertEqual(versioning.bump("hotfix"), "0.3.1.1")
+                self.assertEqual(versioning.check_contract(), "0.3.1.1")
                 self.assertEqual(versioning.bump("fix"), "0.3.2.0")
                 self.assertEqual(versioning.check_contract(), "0.3.2.0")
                 self.assertEqual(versioning.bump("feature"), "0.4.0.0")
@@ -1360,6 +1374,7 @@ class ReleaseContractTests(unittest.TestCase):
     def test_release_version_and_macos_minimum_are_synchronized(self) -> None:
         version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
         self.assertRegex(version, r"^\d+\.\d+\.\d+\.\d+$")
+        self.assertEqual(versioning.format_version(versioning.next_version((0, 3, 1, 0), "hotfix")), "0.3.1.1")
         self.assertEqual(versioning.format_version(versioning.next_version((0, 3, 1, 0), "fix")), "0.3.2.0")
         self.assertEqual(versioning.format_version(versioning.next_version((0, 3, 1, 0), "feature")), "0.4.0.0")
         self.assertEqual(versioning.check_contract(), version)

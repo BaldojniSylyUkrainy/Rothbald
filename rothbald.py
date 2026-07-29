@@ -26,8 +26,14 @@ def configure_bundled_tools() -> None:
     os.environ["PATH"] = os.pathsep.join(part for part in (bundled_root, existing) if part)
 
 
+def duplicate_instance_should_focus(platform_name: str) -> bool:
+    """Let macOS activation semantics preserve the user's current workspace."""
+    return platform_name == "win32"
+
+
 def runtime_smoke() -> None:
-    """Fail fast when a packaged build lost a required native media tool."""
+    """Fail fast when a packaged build lost a runtime dependency."""
+    transcribe_video.verify_runtime_dependencies()
     for name in ("ffmpeg", "ffprobe"):
         executable = server.bundled_tool(name)
         completed = subprocess.run(
@@ -308,7 +314,8 @@ def main() -> None:
             connection.waitForReadyRead(250)
             connection.readAll()
             connection.disconnectFromServer()
-        focus_window()
+        if duplicate_instance_should_focus(sys.platform):
+            focus_window()
 
     instance_server.newConnection.connect(accept_instance_message)
     window.show()

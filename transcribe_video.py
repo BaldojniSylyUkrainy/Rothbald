@@ -12,6 +12,14 @@ from model_manager import WINDOWS_VULKAN_WHISPER_PATTERNS
 from process_utils import quiet_process_options
 
 
+def verify_runtime_dependencies() -> None:
+    """Import the platform backend without loading a model."""
+    if sys.platform == "win32":
+        import ctranslate2  # noqa: F401
+        import requests  # noqa: F401
+        from faster_whisper import WhisperModel  # noqa: F401
+
+
 def resolve_faster_whisper_device(preference: str, cuda_count: int) -> tuple[str, int, str]:
     preference = preference.lower()
     if preference.startswith("cuda:"):
