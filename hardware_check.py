@@ -320,11 +320,15 @@ class HardwarePreflight:
                 windows_build = 0
             if windows_build and windows_build < 19045:
                 blockers.append("Потрібна Windows 10 22H2 або Windows 11.")
-        if ram and ram < MINIMUM_RAM:
+        if not ram:
+            blockers.append("Не вдалося визначити обсяг оперативної пам’яті. Повтори перевірку.")
+        elif ram < MINIMUM_RAM:
             blockers.append("Менше 8 ГБ оперативної пам’яті: великі моделі можуть не запуститися.")
         elif ram and ram < RECOMMENDED_RAM:
             warnings.append("Оперативної пам’яті менше рекомендованих 16 ГБ — великі відео оброблятимуться повільніше.")
-        if disk_free and disk_free < MINIMUM_DISK:
+        if not disk_free:
+            blockers.append("Не вдалося визначити вільне місце для моделей. Повтори перевірку.")
+        elif disk_free < MINIMUM_DISK:
             blockers.append("Для застосунку, моделей і робочого кешу потрібно щонайменше 6 ГБ вільного місця.")
         elif disk_free and disk_free < RECOMMENDED_DISK:
             warnings.append("Вільного місця менше рекомендованих 8 ГБ — для наступного оновлення моделей може забракнути запасу.")

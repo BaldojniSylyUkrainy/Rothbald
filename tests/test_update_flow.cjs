@@ -10,6 +10,18 @@ test('available update opens automatically unless that version is snoozed', () =
   assert.equal(flow.decide({ status: status('available'), snoozed: true, manual: true }).open, true);
 });
 
+test('a manually started check respects an explicitly dismissed window', () => {
+  const decision = flow.decide({
+    status: status('available'),
+    previousStatus: 'checking',
+    manual: true,
+    modalOpen: false,
+    dismissed: true,
+  });
+  assert.equal(decision.open, false);
+  assert.equal(decision.render, true);
+});
+
 test('downloading preserves a user-hidden modal while polling continues', () => {
   const hidden = flow.decide({ status: status('downloading'), previousStatus: 'downloading', modalOpen: false });
   const visible = flow.decide({ status: status('downloading'), previousStatus: 'downloading', modalOpen: true });

@@ -164,7 +164,7 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except BaseException:
+    except Exception:
         server.DATA_DIR.mkdir(parents=True, exist_ok=True)
         (server.DATA_DIR / "crash.log").write_text(traceback.format_exc(), encoding="utf-8")
         raise

@@ -4,7 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing green-main release tag, for example v0.2.0.0"
+        description: "Existing green-main release tag, for example vX.Y.Z.0"
+        default: "v0.4.0.0"
         required: true
         type: string
 
@@ -66,6 +67,7 @@ jobs:
               exit 1
             }
           done
+          python scripts/versioning.py check
           python scripts/validate_release_notes.py
 
   windows:
@@ -108,13 +110,16 @@ jobs:
           python scripts/prepare_build.py
           npx --yes --package=@ast-grep/cli@0.43.0 ast-grep scan .
           npx --yes --package=@ast-grep/cli@0.43.0 ast-grep test
-          python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/validate_release_notes.py
+          python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/smoke_packaged.py scripts/validate_release_notes.py scripts/versioning.py
           node --check static/app.js
           node --check static/update_flow.js
           node --test tests/test_update_flow.cjs
+          python scripts/versioning.py check
           python -m unittest discover -s tests -v
       - name: Build Windows application
         run: pyinstaller --noconfirm Rothbald.spec
+      - name: Smoke-test packaged Windows application
+        run: python scripts/smoke_packaged.py dist/Rothbald/Rothbald.exe
       - name: Import signing certificate and sign application
         shell: pwsh
         run: |
@@ -211,10 +216,11 @@ jobs:
           python scripts/prepare_build.py
           npx --yes --package=@ast-grep/cli@0.43.0 ast-grep scan .
           npx --yes --package=@ast-grep/cli@0.43.0 ast-grep test
-          python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/validate_release_notes.py
+          python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/smoke_packaged.py scripts/validate_release_notes.py scripts/versioning.py
           node --check static/app.js
           node --check static/update_flow.js
           node --test tests/test_update_flow.cjs
+          python scripts/versioning.py check
           python -m unittest discover -s tests -v
       - name: Import Developer ID certificate
         run: |
@@ -252,6 +258,7 @@ jobs:
           VERSION="$(tr -d '[:space:]' < VERSION)"
           pyinstaller --noconfirm Rothbald.spec
           APP_PATH="$PWD/dist/Rothbald.app"
+          python scripts/smoke_packaged.py "$APP_PATH/Contents/MacOS/Rothbald"
           RELEASE_DIR="$PWD/release-assets"
           STAGING_DIR="$(mktemp -d "$RUNNER_TEMP/rothbald-dmg.XXXXXX")"
           mkdir -p "$RELEASE_DIR"

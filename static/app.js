@@ -5,6 +5,7 @@ const state = {
   searchControllers: [], searchLoading: { exact: false, semantic: false },
   appInfo: null, appReady: false, updateStarted: false, updateManual: false, updateTimer: null,
   updatePollInFlight: false, updateActionPending: false, updateSnapshot: null, updateReturnFocus: null,
+  updateDismissed: false,
   backendBusy: null,
 };
 
@@ -162,14 +163,16 @@ function setBackgroundInert(inert) {
 function openUpdateModal() {
   const modal = $('#updateModal');
   if (updateModalIsOpen()) return;
+  state.updateDismissed = false;
   state.updateReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   modal.classList.remove('hidden');
   setBackgroundInert(true);
   $('#closeUpdateModal').focus();
 }
 
-function closeUpdateModal({ snooze = false } = {}) {
+function closeUpdateModal({ snooze = false, user = true } = {}) {
   const status = state.updateSnapshot;
+  if (user) state.updateDismissed = true;
   if (snooze && status?.status === 'available') snoozeUpdate(status.version);
   state.updateManual = false;
   $('#updateModal').classList.add('hidden');
@@ -237,12 +240,15 @@ function applyUpdateStatus(status, { manual = state.updateManual } = {}) {
     modalOpen: updateModalIsOpen(),
     manual,
     snoozed,
+    dismissed: state.updateDismissed,
   });
   state.updateSnapshot = status;
   renderUpdateShortcut(status);
   if (decision.render) renderUpdateModal(status);
   if (decision.open) openUpdateModal();
-  else if (updateModalIsOpen() && ['up_to_date', 'idle', 'disabled'].includes(status.status)) closeUpdateModal();
+  else if (updateModalIsOpen() && ['up_to_date', 'idle', 'disabled'].includes(status.status)) {
+    closeUpdateModal({ user: false });
+  }
   notifyUpdate(decision, status);
   if (['up_to_date', 'downloaded'].includes(status.status)) state.updateManual = false;
   return decision;
@@ -275,6 +281,7 @@ async function checkForUpdates(manual = false) {
 }
 
 async function openOrCheckUpdates() {
+  state.updateDismissed = false;
   state.updateManual = true;
   try {
     const status = await api('/api/update');

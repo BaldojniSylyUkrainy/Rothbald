@@ -13,6 +13,8 @@ Workflow:
 Версія оголошена у `VERSION`. Перед складанням `scripts/prepare_build.py` вбудовує
 її разом із commit SHA та часом складання у застосунок. Footer читає ці метадані
 через локальний API; номер не дублюється в HTML або JavaScript.
+Правила підвищення версії та команда синхронізації описані у
+`docs/VERSIONING_UK.md`.
 
 ## 1. Repository visibility і main ruleset
 
@@ -107,13 +109,13 @@ gh secret set ROTHBALD_UPDATER_PRIVATE_KEY --env release \
 
 ## 5. Запуск релізу
 
-1. Змініть `VERSION` і `RELEASE_NOTES.md` в одному reviewed commit. Перший рядок notes має бути `# Rothbald <VERSION>`; потрібні реальний заголовок секції та список без TODO/TBD/заглушок.
+1. Запустіть `python scripts/versioning.py fix` для виправлення або `python scripts/versioning.py feature` для нової функції. Скрипт синхронізує `VERSION`, заголовок notes і стандартне значення tag у workflow. Замініть TODO у `RELEASE_NOTES.md` реальним описом до commit.
 2. Дочекайтесь зеленого `test-and-build` на `main`: звичайний CI також перевіряє notes.
 3. Створіть annotated tag `v` + значення `VERSION`, наприклад `v0.2.0.0`, саме на зеленому `main`, і запуште його.
 4. Tag push навмисно не запускає повторний `test-and-build`.
 5. Відкрийте **Actions → Manual signed release → Run workflow**.
 6. Branch: лише `main`.
-7. `tag`: уже наявний тег із попереднього кроку. Окремого поля notes немає.
+7. `tag`: уже наявний тег із попереднього кроку. Поле автоматично має актуальне значення з `VERSION`; окремого поля notes немає.
 8. Якщо для environment налаштовані required reviewers, approve jobs.
 
 Workflow fail-closed зупиниться, якщо запуск зроблено не з поточного `main`, тег

@@ -62,6 +62,10 @@ SEMANTIC_INDEX_VERSION = "natural-topic-v2"
 SEMANTIC_INDEX_ID = f"{EMBEDDING_MODEL}@{SEMANTIC_INDEX_VERSION}"
 EMBEDDING_DIMENSION = 1024
 SEMANTIC_SCORE_FLOOR = 0.70
+SEMANTIC_QUERY_INSTRUCTION = (
+    "Given a search query in any language, retrieve transcript passages "
+    "that express the same claim, idea, or topic"
+)
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("VIDEO_SEARCH_PORT", "8765"))
 TRANSCRIPTION_PART_SECONDS = 30 * 60
@@ -84,10 +88,13 @@ _app_info = application_info()
 update_manager = UpdateManager(
     DATA_DIR,
     _app_info["version"],
-    enabled=(
-        getattr(sys, "frozen", False)
-        and _app_info["channel"] == "release"
-    ) or os.environ.get("ROTHBALD_ENABLE_UPDATER") == "1",
+    enabled=os.environ.get("ROTHBALD_ENABLE_UPDATER") != "0" and (
+        (
+            getattr(sys, "frozen", False)
+            and _app_info["channel"] == "release"
+        )
+        or os.environ.get("ROTHBALD_ENABLE_UPDATER") == "1"
+    ),
 )
 folder_picker_callback = None
 runtime_lock = threading.Lock()
@@ -446,8 +453,26 @@ def respond(handler: BaseHTTPRequestHandler, payload: object, status: int = 200)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Cross-Origin-Resource-Policy", "same-origin")
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    handler.send_header("Referrer-Policy", "no-referrer")
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def trusted_local_host(raw_host: str, port: int = PORT) -> bool:
+    """Accept only the loopback origin owned by this desktop process."""
+    try:
+        parsed = urllib.parse.urlsplit(f"//{raw_host}")
+        requested_port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.hostname in {"127.0.0.1", "localhost"}
+        and requested_port == port
+        and parsed.username is None
+        and parsed.password is None
+    )
 
 
 def get_video(video_id: str):
@@ -807,11 +832,10 @@ class LocalEmbedder:
         import numpy as np
 
         if kind == "query":
-            task = (
-                "Given a Russian-language search query, retrieve transcript passages "
-                "that express the same claim, idea, or topic"
-            )
-            prepared = [f"Instruct: {task}\nQuery: {text}" for text in texts]
+            prepared = [
+                f"Instruct: {SEMANTIC_QUERY_INSTRUCTION}\nQuery: {text}"
+                for text in texts
+            ]
         else:
             # E5 Large Instruct expects retrieval documents without a prefix.
             prepared = texts
@@ -1742,6 +1766,8 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[{self.log_date_time_string()}] {fmt % args}")
 
     def do_GET(self) -> None:
+        if not self.trusted_host():
+            return respond(self, {"error": "Запит відхилено: недовірений локальний хост"}, 403)
         parsed = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed.query)
         if parsed.path == "/api/bootstrap":
@@ -1773,7 +1799,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self) -> None:
-        if not self.trusted_origin():
+        if not self.trusted_host() or not self.trusted_origin():
             return respond(self, {"error": "Запит відхилено: недовірене джерело"}, 403)
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/hardware/confirm":
@@ -1836,13 +1862,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_DELETE(self) -> None:
-        if not self.trusted_origin():
+        if not self.trusted_host() or not self.trusted_origin():
             return respond(self, {"error": "Запит відхилено: недовірене джерело"}, 403)
         path = urllib.parse.urlparse(self.path).path
         match = re.fullmatch(r"/api/projects/([0-9a-f]+)", path)
         if match:
             return self.delete_project(match.group(1))
         self.send_error(404)
+
+    def trusted_host(self) -> bool:
+        return trusted_local_host(self.headers.get("Host", ""))
 
     def trusted_origin(self) -> bool:
         origin = self.headers.get("Origin")
@@ -2098,6 +2127,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", mimetypes.guess_type(target.name)[0] or "application/octet-stream")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        if target.name == "index.html":
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; media-src 'self'; img-src 'self' data:; "
+                "style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'",
+            )
         self.end_headers()
         self.wfile.write(body)
 
@@ -2115,6 +2153,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(206 if header else 200)
         self.send_header("Content-Type", mimetypes.guess_type(target.name)[0] or "application/octet-stream")
         self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Length", str(end - start + 1))
         if header:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")

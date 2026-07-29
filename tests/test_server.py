@@ -26,6 +26,7 @@ from hardware_check import HardwarePreflight
 from model_manager import ModelManager, WINDOWS_VULKAN_WHISPER_REPO, whisper_spec_for_device
 from release_notes import validate_release_notes
 from scripts import generate_release_manifest
+from scripts import versioning
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from updater import UpdateManager
@@ -166,6 +167,18 @@ class HardwarePreflightTests(unittest.TestCase):
             self.assertEqual(report["performance"], "blocked")
             with self.assertRaises(ValueError):
                 checker.confirm("auto")
+
+    def test_unknown_memory_and_storage_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(hardware_check.sys, "platform", "darwin"), \
+             mock.patch.object(hardware_check.platform, "machine", return_value="arm64"), \
+             mock.patch.object(hardware_check, "_physical_memory", return_value=0), \
+             mock.patch.object(hardware_check.shutil, "disk_usage", side_effect=OSError("unavailable")), \
+             mock.patch.object(hardware_check.os, "cpu_count", return_value=8):
+            report = HardwarePreflight(Path(temporary)).inspect()
+        self.assertEqual(report["performance"], "blocked")
+        self.assertTrue(any("оперативної пам’яті" in item for item in report["blockers"]))
+        self.assertTrue(any("вільне місце" in item for item in report["blockers"]))
 
     def test_macos_ventura_is_blocked_by_packaged_torch_requirement(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, \
@@ -732,6 +745,17 @@ class QueueTests(TemporaryStorageTest):
 
 
 class SearchAndUtilityTests(unittest.TestCase):
+    def test_local_api_rejects_dns_rebinding_hosts(self) -> None:
+        self.assertTrue(server.trusted_local_host("127.0.0.1:8765", 8765))
+        self.assertTrue(server.trusted_local_host("localhost:8765", 8765))
+        self.assertFalse(server.trusted_local_host("attacker.example:8765", 8765))
+        self.assertFalse(server.trusted_local_host("127.0.0.1:9999", 8765))
+        self.assertFalse(server.trusted_local_host("user@127.0.0.1:8765", 8765))
+
+    def test_semantic_query_instruction_is_language_neutral(self) -> None:
+        self.assertIn("any language", server.SEMANTIC_QUERY_INSTRUCTION)
+        self.assertNotIn("Russian-language", server.SEMANTIC_QUERY_INSTRUCTION)
+
     def test_progress_parser_accepts_mlx_and_whisper_cpp_formats(self) -> None:
         self.assertEqual(server.progress_from_line(" 42%|████"), 0.42)
         self.assertEqual(
@@ -1005,6 +1029,30 @@ class UpdaterTests(unittest.TestCase):
 
 
 class ReleaseContractTests(unittest.TestCase):
+    def test_version_bump_updates_release_inputs_and_notes_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            version_file = root / "VERSION"
+            notes = root / "RELEASE_NOTES.md"
+            workflow = root / "release.yml"
+            version_file.write_text("0.3.1.0\n", encoding="utf-8")
+            notes.write_text("# Rothbald 0.3.1.0\n", encoding="utf-8")
+            workflow.write_text('tag:\n  default: "v0.3.1.0"\n', encoding="utf-8")
+            with mock.patch.object(versioning, "VERSION_FILE", version_file), \
+                 mock.patch.object(versioning, "RELEASE_NOTES", notes), \
+                 mock.patch.object(versioning, "RELEASE_WORKFLOW", workflow):
+                self.assertEqual(versioning.bump("fix"), "0.3.2.0")
+                self.assertEqual(versioning.check_contract(), "0.3.2.0")
+                self.assertEqual(versioning.bump("feature"), "0.4.0.0")
+                self.assertEqual(versioning.check_contract(), "0.4.0.0")
+            self.assertIn('default: "v0.4.0.0"', workflow.read_text(encoding="utf-8"))
+            self.assertTrue(notes.read_text(encoding="utf-8").startswith("# Rothbald 0.4.0.0\n"))
+
+    def test_clean_system_exit_is_not_written_as_a_crash(self) -> None:
+        launcher = (ROOT / "rothbald.py").read_text(encoding="utf-8")
+        self.assertIn("except Exception:", launcher)
+        self.assertNotIn("except BaseException:", launcher)
+
     def test_hardware_gate_explains_required_resources_below_detected_values(self) -> None:
         script = (ROOT / "static/app.js").read_text(encoding="utf-8")
         stylesheet = (ROOT / "static/style.css").read_text(encoding="utf-8")
@@ -1168,6 +1216,9 @@ class ReleaseContractTests(unittest.TestCase):
     def test_release_version_and_macos_minimum_are_synchronized(self) -> None:
         version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
         self.assertRegex(version, r"^\d+\.\d+\.\d+\.\d+$")
+        self.assertEqual(versioning.format_version(versioning.next_version((0, 3, 1, 0), "fix")), "0.3.2.0")
+        self.assertEqual(versioning.format_version(versioning.next_version((0, 3, 1, 0), "feature")), "0.4.0.0")
+        self.assertEqual(versioning.check_contract(), version)
         self.assertIn('\"LSMinimumSystemVersion\": \"14.0\"', (ROOT / "Rothbald.spec").read_text())
         self.assertIn("macOS 14.0+", (ROOT / "README.md").read_text(encoding="utf-8"))
         build_workflow = (ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8")
@@ -1176,9 +1227,12 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("retention-days: 1", build_workflow)
         self.assertIn("Rothbald-*-Windows-Setup.exe", build_workflow)
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertIn(f'default: "v{version}"', workflow)
         self.assertIn("gh release create \"$TAG\" --verify-tag --draft", workflow)
         self.assertIn('[[ "$REQUESTED_TAG" =~ ^v[0-9]+\\.', workflow)
         self.assertIn("Rothbald-${VERSION}-Mac-Apple-Silicon.dmg", workflow)
+        self.assertGreaterEqual(workflow.count("scripts/smoke_packaged.py"), 2)
+        self.assertIn("scripts/smoke_packaged.py", build_workflow)
         installer = (ROOT / "installer/Rothbald.iss").read_text(encoding="utf-8")
         self.assertIn("OutputBaseFilename=Rothbald-{#MyAppVersion}-Windows-Setup", installer)
 

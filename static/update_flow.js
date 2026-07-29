@@ -5,7 +5,7 @@
 }(typeof globalThis !== 'undefined' ? globalThis : this, () => {
   const POLL_DELAYS = { checking: 800, downloading: 500 };
 
-  function decide({ status, previousStatus = '', modalOpen = false, manual = false, snoozed = false }) {
+  function decide({ status, previousStatus = '', modalOpen = false, manual = false, snoozed = false, dismissed = false }) {
     const name = status?.status || 'idle';
     const render = ['available', 'downloading', 'downloaded', 'error'].includes(name);
     const changed = name !== previousStatus;
@@ -22,6 +22,7 @@
       if (changed && !open) notification = 'error';
     }
     if (name === 'up_to_date' && manual) notification = 'up_to_date';
+    if (dismissed && !modalOpen) open = false;
 
     return {
       render,

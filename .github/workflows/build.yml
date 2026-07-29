@@ -56,14 +56,23 @@ jobs:
           python scripts/prepare_build.py
           npx --yes --package=@ast-grep/cli@0.43.0 ast-grep scan .
           npx --yes --package=@ast-grep/cli@0.43.0 ast-grep test
-          python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/validate_release_notes.py
+          python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/smoke_packaged.py scripts/validate_release_notes.py scripts/versioning.py
           node --check static/app.js
           node --check static/update_flow.js
           node --test tests/test_update_flow.cjs
           python scripts/validate_release_notes.py
+          python scripts/versioning.py check
           python -m unittest discover -s tests -v
       - name: Build native bundle
         run: pyinstaller --noconfirm Rothbald.spec
+      - name: Smoke-test packaged application
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            python scripts/smoke_packaged.py dist/Rothbald.app/Contents/MacOS/Rothbald
+          else
+            python scripts/smoke_packaged.py dist/Rothbald/Rothbald.exe
+          fi
       - name: Archive macOS app
         if: runner.os == 'macOS'
         run: ditto -c -k --sequesterRsrc --keepParent dist/Rothbald.app Rothbald-Apple-Silicon.zip

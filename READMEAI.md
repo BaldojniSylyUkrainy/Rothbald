@@ -93,7 +93,7 @@ Important resource decision: semantic embeddings must run on CPU. Do not move th
 ### Model bootstrap and updates
 
 - The HTTP server starts before models are ready so the UI can show the model gate.
-- Model checks, downloads, queue workers, and semantic recovery do not start until the hardware preflight is accepted. Unsupported architecture/OS, less than 8 GB RAM, or less than 6 GB free space blocks model setup; lower-than-recommended resources produce an explicit slow-performance warning.
+- Model checks, downloads, queue workers, and semantic recovery do not start until the hardware preflight is accepted. Unsupported architecture/OS, unknown RAM/storage readings, less than 8 GB RAM, or less than 6 GB free space blocks model setup; lower-than-recommended resources produce an explicit slow-performance warning.
 - `GET /api/hardware` exposes the report and available compute devices. `POST /api/hardware/confirm` persists the hardware fingerprint plus device choice in `hardware.json`. A material hardware/driver/resource-tier change requires acknowledgement again.
 - The startup hardware cards show both the detected system/RAM/free-space value and the matching minimum/recommended requirement supplied by the same backend report. Keep these values data-driven from `hardware_check.py`; do not duplicate resource thresholds in UI copy.
 - macOS Apple Silicon always uses MLX on the Apple GPU. Windows offers Auto, CPU, every NVIDIA device that CTranslate2 confirms is CUDA-available, and every non-NVIDIA device returned by the bundled Vulkan probe. AMD is the supported Vulkan target; Intel is labeled experimental. Semantic embeddings remain CPU-only regardless of this choice.
@@ -111,7 +111,7 @@ Important resource decision: semantic embeddings must run on CPU. Do not move th
 ### Application updates
 
 - Automatic binary updates are enabled only in frozen builds whose embedded channel is `release`. Source and normal CI builds stay disabled; `ROTHBALD_ENABLE_UPDATER=1` exists only for controlled development tests.
-- After the hardware/model startup gate is ready, the UI checks `https://github.com/BaldojniSylyUkrainy/Rothbald/releases/latest/download/latest.json` in a background thread. Manual checking remains available from the footer.
+- After the hardware/model startup gate is ready, the UI checks `https://github.com/BaldojniSylyUkrainy/Rothbald/releases/latest/download/latest.json` in a background thread. Manual checking remains available from the footer. A user-dismissed updater stays closed through the active check/download and terminal result; progress and retry remain reachable from the footer.
 - `latest.json` is signed with Ed25519. `update_manifest.py` contains only the public key and accepts only schema 1, four-part versions, the exact Rothbald GitHub release path, exact supported platform filenames, positive sizes, and lowercase SHA-256 values.
 - The matching private key must exist only as the protected `release` environment secret `ROTHBALD_UPDATER_PRIVATE_KEY` and in an encrypted owner backup. Never commit it or place it in a build artifact. Losing it after the first updater-enabled release prevents existing installations from trusting future manifests; rotating it requires a transition release signed by the existing key.
 - The updater streams the selected installer into the platform application-data `updates/` directory, rejects files larger or smaller than the signed size, verifies SHA-256 before the atomic rename, and verifies size/SHA-256 again immediately before native launch.
@@ -259,8 +259,13 @@ The desktop launcher binds the local HTTP socket synchronously before it creates
 - `setup.ps1` performs the corresponding Windows dependency checks and installs the platform-marked requirements.
 - Packaged Windows builds must run `scripts/build_whisper_cpp_windows.ps1` before PyInstaller. It prepares a pinned SHA-256-verified Vulkan SDK when no system SDK is available, downloads and verifies the pinned whisper.cpp source archive, builds static `whisper-cli.exe` with Vulkan plus `rothbald-vulkan-probe.exe`, and places both under ignored `build/windows-tools/` for bundling.
 - `.github/workflows/build.yml` tests and packages on native `macos-15` ARM64 and `windows-latest` runners for `main`, pull requests, and explicit manual dispatches. Pushing a release tag must not start a duplicate native build; the manually dispatched release workflow is the only post-tag build. Pull requests verify full packaging without uploading the large bundles; main/manual CI artifacts are retained for one day.
-- `.github/workflows/release.yml` is manual-only and uses the `release` environment. Its free Ubuntu preflight accepts only an existing four-part tag that equals `VERSION`, points at the dispatched current `main` commit, validates `RELEASE_NOTES.md`, and requires every Apple, Windows Authenticode, and updater credential before native jobs start. It installs platform-specific runtime/build locks, Authenticode-signs and verifies the Windows executable and Inno Setup installer, signs/notarizes/staples the Apple Silicon DMG, restores the runner's original Keychain search list, generates checksums plus a signed `latest.json`, and creates a draft release whose body is the same `RELEASE_NOTES.md`. The draft must be published manually before `/releases/latest` exposes it to installed applications.
-- Build version metadata is generated from `VERSION` before PyInstaller. The packaged UI reads `/api/app`; never hardcode a displayed version in HTML or JavaScript.
+- `.github/workflows/release.yml` is manual-only and uses the `release` environment. Its free Ubuntu preflight accepts only an existing four-part tag that equals `VERSION`, points at the dispatched current `main` commit, validates `RELEASE_NOTES.md`, and requires every Apple, Windows Authenticode, and updater credential before native jobs start. It installs platform-specific runtime/build locks, launches a smoke test against each packaged native executable, Authenticode-signs and verifies the Windows executable and Inno Setup installer, signs/notarizes/staples the Apple Silicon DMG, restores the runner's original Keychain search list, generates checksums plus a signed `latest.json`, and creates a draft release whose body is the same `RELEASE_NOTES.md`. The draft must be published manually before `/releases/latest` exposes it to installed applications.
+- Build version metadata is generated from `VERSION` before PyInstaller. The packaged UI reads `/api/app`; never hardcode a displayed version in HTML or JavaScript. `scripts/versioning.py fix|feature` implements the documented `MAJOR.MINOR.PATCH.0` policy and synchronizes `VERSION`, release notes, and the manual workflow tag default; `check` is a CI contract.
+
+### Local HTTP boundary
+
+- The desktop API binds only to `127.0.0.1`, and every GET/POST/DELETE must also carry a `Host` matching the exact configured loopback port. This prevents a hostile DNS-rebinding page from reading local projects, paths, transcripts, search results, or media.
+- Mutating requests additionally enforce a same-origin `Origin` when the header is present. JSON, static UI, and media responses carry same-origin resource and content-sniffing protections; the main document supplies the restrictive application CSP.
 
 ## Verification checklist
 
@@ -269,11 +274,12 @@ Run after changes:
 ```bash
 ast-grep scan .
 ast-grep test
-.venv/bin/python -m py_compile app_info.py hardware_check.py process_utils.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/validate_release_notes.py
+.venv/bin/python -m py_compile app_info.py hardware_check.py process_utils.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/smoke_packaged.py scripts/validate_release_notes.py scripts/versioning.py
 node --check static/app.js
 node --check static/update_flow.js
 node --test tests/test_update_flow.cjs
 .venv/bin/python scripts/validate_release_notes.py
+.venv/bin/python scripts/versioning.py check
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
@@ -307,6 +313,12 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 - Draft GitHub Release hosting, embedded build identity, macOS Developer ID signing/notarization, Windows Authenticode signing, signed application-update manifests, verified in-app downloads, and native installer handoff are implemented. A protected release environment must provide the platform signing certificates.
 
 ## Changelog
+
+### 2026-07-29 — MVP review hardening and version contract
+
+- Closed the local HTTP DNS-rebinding read boundary, added fail-closed unknown-resource checks, stopped clean `SystemExit` from creating crash reports, and made the semantic retrieval instruction language-neutral.
+- Preserved explicit updater dismissal throughout checks and downloads, added deterministic regression coverage, and made native CI/release jobs launch each packaged application and validate its served UI plus embedded version.
+- Added the `MAJOR.MINOR.PATCH.0` release helper used by `yt-dlp BD`: fixes increment PATCH, features increment MINOR and reset PATCH, while the manual release tag default, release notes, and `VERSION` remain synchronized. Prepared feature version `0.4.0.0`.
 
 ### 2026-07-29 — visible hardware requirements
 
