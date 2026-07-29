@@ -900,7 +900,8 @@ class SearchAndUtilityTests(unittest.TestCase):
                 Path("/tmp/input.wav"), Path("/tmp/output.json"), "auto"
             )
         self.assertEqual(command[:2], [server.sys.executable, "--transcribe"])
-        self.assertEqual(command[-2:], ["/models/exact", "auto"])
+        self.assertEqual(Path(command[-2]), Path("/models/exact"))
+        self.assertEqual(command[-1], "auto")
 
     def test_language_mode_changes_transcription_checkpoint_signature(self) -> None:
         row = {"size": 10, "mtime": 123.5}
