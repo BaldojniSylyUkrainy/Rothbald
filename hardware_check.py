@@ -367,6 +367,11 @@ class HardwarePreflight:
             and bool(saved.get("accepted_at"))
         )
         performance = "blocked" if blockers else "limited" if warnings else "recommended"
+        system_requirement = (
+            "macOS 14+ · Apple Silicon" if sys.platform == "darwin"
+            else "Windows 10 22H2+ · x64" if sys.platform == "win32"
+            else "Apple Silicon або Windows x64"
+        )
         return {
             "platform": sys.platform,
             "platform_label": (
@@ -378,6 +383,14 @@ class HardwarePreflight:
             "ram_bytes": ram,
             "disk_free_bytes": disk_free,
             "cpu_cores": cpu_cores,
+            "requirements": {
+                "system": system_requirement,
+                "ram_minimum_bytes": MINIMUM_RAM,
+                "ram_recommended_bytes": RECOMMENDED_RAM,
+                "disk_minimum_bytes": MINIMUM_DISK,
+                "disk_recommended_bytes": RECOMMENDED_DISK,
+                "cpu_minimum_cores": MINIMUM_CPU_CORES,
+            },
             "devices": devices,
             "selected_device": selected,
             "resolved_device": resolved_device,

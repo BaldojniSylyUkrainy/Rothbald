@@ -145,6 +145,11 @@ class HardwarePreflightTests(unittest.TestCase):
             self.assertEqual(report["performance"], "limited")
             self.assertTrue(report["requires_confirmation"])
             self.assertTrue(any("CPU" in warning for warning in report["warnings"]))
+            self.assertEqual(report["requirements"]["system"], "Windows 10 22H2+ · x64")
+            self.assertEqual(report["requirements"]["ram_minimum_bytes"], 8 * hardware_check.GIB)
+            self.assertEqual(report["requirements"]["ram_recommended_bytes"], 16 * hardware_check.GIB)
+            self.assertEqual(report["requirements"]["disk_minimum_bytes"], 6 * hardware_check.GIB)
+            self.assertEqual(report["requirements"]["disk_recommended_bytes"], 8 * hardware_check.GIB)
             confirmed = checker.confirm("cpu")
             self.assertTrue(confirmed["accepted"])
             self.assertEqual(confirmed["selected_device"], "cpu")
@@ -1000,6 +1005,14 @@ class UpdaterTests(unittest.TestCase):
 
 
 class ReleaseContractTests(unittest.TestCase):
+    def test_hardware_gate_explains_required_resources_below_detected_values(self) -> None:
+        script = (ROOT / "static/app.js").read_text(encoding="utf-8")
+        stylesheet = (ROOT / "static/style.css").read_text(encoding="utf-8")
+        self.assertIn("requirements.ram_minimum_bytes", script)
+        self.assertIn("requirements.disk_recommended_bytes", script)
+        self.assertIn("Мінімум ${hardwareSize", script)
+        self.assertIn(".hardware-requirement", stylesheet)
+
     def test_backend_pickers_use_themed_menus_and_model_poll_skips_hardware_probe(self) -> None:
         markup = (ROOT / "static/index.html").read_text(encoding="utf-8")
         script = (ROOT / "static/app.js").read_text(encoding="utf-8")

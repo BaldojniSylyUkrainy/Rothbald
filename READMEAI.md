@@ -95,6 +95,7 @@ Important resource decision: semantic embeddings must run on CPU. Do not move th
 - The HTTP server starts before models are ready so the UI can show the model gate.
 - Model checks, downloads, queue workers, and semantic recovery do not start until the hardware preflight is accepted. Unsupported architecture/OS, less than 8 GB RAM, or less than 6 GB free space blocks model setup; lower-than-recommended resources produce an explicit slow-performance warning.
 - `GET /api/hardware` exposes the report and available compute devices. `POST /api/hardware/confirm` persists the hardware fingerprint plus device choice in `hardware.json`. A material hardware/driver/resource-tier change requires acknowledgement again.
+- The startup hardware cards show both the detected system/RAM/free-space value and the matching minimum/recommended requirement supplied by the same backend report. Keep these values data-driven from `hardware_check.py`; do not duplicate resource thresholds in UI copy.
 - macOS Apple Silicon always uses MLX on the Apple GPU. Windows offers Auto, CPU, every NVIDIA device that CTranslate2 confirms is CUDA-available, and every non-NVIDIA device returned by the bundled Vulkan probe. AMD is the supported Vulkan target; Intel is labeled experimental. Semantic embeddings remain CPU-only regardless of this choice.
 - Adding a newly detected CUDA/Vulkan device changes the hardware fingerprint and reopens the startup hardware gate before model bootstrap. A persisted `auto` choice resolves to the new preferred backend after confirmation; an explicit `cpu` choice remains selected until the user changes it. This is the migration path from pre-Vulkan releases.
 - The footer shows the effective backend and device beside the version. Its themed dropdown may change among currently available devices only while model preparation, transcription queues, and semantic indexing are idle; both the browser and `/api/hardware/confirm` enforce this guard. A format-changing selection reopens the model gate before the main UI resumes.
@@ -306,6 +307,10 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 - Draft GitHub Release hosting, embedded build identity, macOS Developer ID signing/notarization, Windows Authenticode signing, signed application-update manifests, verified in-app downloads, and native installer handoff are implemented. A protected release environment must provide the platform signing certificates.
 
 ## Changelog
+
+### 2026-07-29 — visible hardware requirements
+
+- Added compact, readable requirement lines beneath the detected system, memory, and free-space values in the startup preflight. The UI receives the same 8/16 GB RAM and 6/8 GB disk thresholds that enforce the hardware gate, so its explanation cannot silently drift from validation.
 
 ### 2026-07-29 — project language mode
 

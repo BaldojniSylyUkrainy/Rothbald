@@ -428,6 +428,7 @@ async function changeBackend(device = $('#appBackendSelect').value) {
 }
 
 function renderHardware(report) {
+  const requirements = report.requirements || {};
   $('#hardwarePanel').classList.remove('hidden');
   $('#modelProgress').classList.add('hidden');
   $('#modelGateTitle').textContent = report.blockers.length ? 'Цей комп’ютер не відповідає вимогам' : 'Перевірка комп’ютера';
@@ -437,9 +438,18 @@ function renderHardware(report) {
       ? 'Rothbald запуститься, але на цій конфігурації частина операцій може працювати повільніше.'
       : 'Конфігурація підходить. Обери пристрій для розпізнавання перед завантаженням моделей.';
   $('#hardwareStats').innerHTML = `
-    <div class="hardware-stat"><small>Система</small><strong>${esc(report.platform_label)}</strong></div>
-    <div class="hardware-stat"><small>Пам’ять</small><strong>${hardwareSize(report.ram_bytes)}</strong></div>
-    <div class="hardware-stat"><small>Вільне місце</small><strong>${hardwareSize(report.disk_free_bytes)}</strong></div>`;
+    <div class="hardware-stat">
+      <small>Система</small><strong>${esc(report.platform_label)}</strong>
+      <span class="hardware-requirement">Потрібно: ${esc(requirements.system || 'Apple Silicon або Windows x64')}</span>
+    </div>
+    <div class="hardware-stat">
+      <small>Пам’ять</small><strong>${hardwareSize(report.ram_bytes)}</strong>
+      <span class="hardware-requirement">Мінімум ${hardwareSize(requirements.ram_minimum_bytes)} · рекомендовано ${hardwareSize(requirements.ram_recommended_bytes)}</span>
+    </div>
+    <div class="hardware-stat">
+      <small>Вільне місце</small><strong>${hardwareSize(report.disk_free_bytes)}</strong>
+      <span class="hardware-requirement">Мінімум ${hardwareSize(requirements.disk_minimum_bytes)} · рекомендовано ${hardwareSize(requirements.disk_recommended_bytes)}</span>
+    </div>`;
   const messages = [
     ...(report.blockers || []).map(message => ({type: 'blocker', message})),
     ...(report.warnings || []).map(message => ({type: 'warning', message})),
