@@ -17,8 +17,13 @@ foreach ($Name in @("ffmpeg.exe", "ffprobe.exe")) {
   }
   $Destination = Join-Path $Output $Name
   Copy-Item -Force -LiteralPath $Candidate.FullName -Destination $Destination
-  & $Destination -version | Select-Object -First 1
-  if ($LASTEXITCODE -ne 0) {
+  # Read the complete native output before shortening it for the log. Piping a
+  # live ffmpeg process into `Select-Object -First 1` closes its output early on
+  # Windows and can turn an otherwise successful invocation into a non-zero exit.
+  $VersionOutput = & $Destination -version 2>&1
+  $ExitCode = $LASTEXITCODE
+  $VersionOutput | Select-Object -First 1
+  if ($ExitCode -ne 0) {
     throw "$Name did not start after being copied"
   }
 }
