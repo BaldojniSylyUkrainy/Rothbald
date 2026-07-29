@@ -325,7 +325,7 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 - Bound every model runtime to the exact verified Hugging Face snapshot, moved new model caches under Rothbald data, revisioned transcription checkpoints/semantic indexes, and added automatic semantic rebuilding after a model update.
 - Made Windows packaging reject Chocolatey shims, added real FFmpeg preparation and packaged tool smoke checks, protected long jobs from idle sleep, and added native single-instance focus behavior.
 - Added mid-transcription source identity checks, non-blocking JSON export failure handling, safe backup ordering, duration-job deduplication, stale semantic-search cancellation, bounded semantic matrix caching, and narrower indexed exact-search vocabulary reads.
-- Added hashed Python locks, npm integrity locking, commit-pinned Actions, Dependabot configuration, CodeQL, third-party notices, updater artifact cleanup, and regression tests for the new failure paths.
+- Added hashed Python locks, npm integrity locking, commit-pinned Actions, third-party notices, updater artifact cleanup, and regression tests for the new failure paths.
 
 ### 2026-07-29 — clearer first-project and search flow
 

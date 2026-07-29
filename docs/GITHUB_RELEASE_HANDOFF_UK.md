@@ -57,16 +57,10 @@ Release workflow використовує лише офіційні `actions/che
 Глобально workflow має `contents: read`; тільки job `publish-draft` явно отримує
 `contents: write`.
 
-У **Settings → Code security and analysis** також увімкніть:
-
-- Dependabot alerts і Dependabot security updates;
-- secret scanning та push protection, якщо вони доступні для плану repository;
-- code scanning через локально доданий workflow `codeql`.
-
-Після першого зеленого запуску CodeQL додайте його check до required status
-checks у `Protect main`. Конфігурація Dependabot і CodeQL лежить у repository,
-але server-side перемикачі GitHub та branch ruleset неможливо ввімкнути самим
-commit-ом — їх перевіряє власник у Settings.
+У **Settings → Code security and analysis** також увімкніть secret scanning та
+push protection, якщо вони доступні для плану repository. Ці server-side
+перемикачі GitHub та branch ruleset неможливо ввімкнути самим commit-ом — їх
+перевіряє власник у Settings.
 
 ## 3. Protected environment `release`
 
