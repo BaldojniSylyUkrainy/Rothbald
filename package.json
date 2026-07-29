@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "devDependencies": {
-    "@ast-grep/cli": "0.43.0"
+    "@ast-grep/cli": "0.45.0"
   },
   "scripts": {
     "scan": "ast-grep scan .",
