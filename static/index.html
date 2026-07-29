@@ -68,6 +68,16 @@
     <div id="projectWorkspace" class="hidden">
       <nav id="projectActions" class="project-toolbar hidden" aria-label="Дії поточного проєкту">
         <button id="closeProject" class="project-back">← ДО ПРОЄКТІВ</button>
+        <div class="project-language-setting">
+          <span class="project-language-label">Мова розпізнавання</span>
+          <div id="projectLanguagePicker" class="choice-picker" data-picker-kind="language">
+            <button id="projectLanguageSelect" class="choice-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="projectLanguageMenu">
+              <span class="choice-label">Стандартна</span><span aria-hidden="true">⌄</span>
+            </button>
+            <div id="projectLanguageMenu" class="choice-menu hidden" role="listbox" aria-label="Мова розпізнавання"></div>
+          </div>
+          <small>Для нових і повторно розпізнаних відео</small>
+        </div>
         <div class="project-toolbar-actions">
           <button id="rescan">Оновити папку</button>
           <button id="retranscribe" class="danger">Перерозпізнати все</button>

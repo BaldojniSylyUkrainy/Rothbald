@@ -555,6 +555,24 @@ function currentProject() {
   return state.projects.find(project => project.id === state.project);
 }
 
+const PROJECT_LANGUAGE_OPTIONS = [
+  { key: 'standard', label: 'Стандартна' },
+  { key: 'auto', label: 'Автовизначення' },
+];
+
+function renderProjectLanguage() {
+  const project = currentProject();
+  const button = $('#projectLanguageSelect');
+  if (!project || !button) return;
+  const selected = project.language_mode || 'standard';
+  renderChoicePicker(button, $('#projectLanguageMenu'), PROJECT_LANGUAGE_OPTIONS, selected, true);
+  const unfinished = +project.busy_count > 0 || +project.paused_count > 0 || Boolean(project.queue_paused);
+  button.disabled = unfinished;
+  button.title = unfinished
+    ? 'Спочатку заверши або скинь поточну чергу розпізнавання'
+    : 'Змінити мову для нових і повторно розпізнаних відео';
+}
+
 function renderProjectHome() {
   const box = $('#recentProjects');
   if (!state.projects.length) {
@@ -591,6 +609,7 @@ async function loadProjects(showErrors = true) {
     const wasBusy = state.backendBusy;
     state.backendBusy = projectsAreBusy();
     renderProjectHome();
+    renderProjectLanguage();
     if (state.project && state.videos.length) renderQueue();
     updateBackendAvailability();
     if (wasBusy === true && !state.backendBusy) {
@@ -920,6 +939,28 @@ async function retranscribeProject() {
   } catch (error) { toast(error.message); }
 }
 
+async function changeProjectLanguage(languageMode) {
+  const project = currentProject();
+  if (!project || languageMode === (project.language_mode || 'standard')) return;
+  const previous = project.language_mode || 'standard';
+  try {
+    const data = await api(`/api/projects/${project.id}/language`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ language_mode: languageMode }),
+    });
+    project.language_mode = data.language_mode;
+    renderProjectLanguage();
+    toast(languageMode === 'auto'
+      ? 'Увімкнено автовизначення для нових і повторних розпізнавань.'
+      : 'Відновлено стандартну мову розпізнавання.');
+  } catch (error) {
+    project.language_mode = previous;
+    renderProjectLanguage();
+    toast(error.message);
+  }
+}
+
 async function deleteProject(id = state.project) {
   const project = state.projects.find(item => item.id === id);
   if (!project) return;
@@ -1124,6 +1165,7 @@ document.addEventListener('click', event => {
     }
     closeChoicePickers();
     if (picker.dataset.pickerKind === 'backend') changeBackend(value);
+    if (picker.dataset.pickerKind === 'language') changeProjectLanguage(value);
     return;
   }
   const trigger = event.target.closest('[aria-haspopup="listbox"]');

@@ -71,7 +71,7 @@ Scanning stages the complete filesystem result before changing SQLite, then atom
 - Windows NVIDIA/CPU engine/model artifact: `faster-whisper` with `mobiuslabsgmbh/faster-whisper-large-v3-turbo`.
 - Windows AMD/Intel/other non-NVIDIA GPU engine/model artifact: bundled `whisper.cpp` Vulkan with `ggerganov/whisper.cpp` `ggml-large-v3-turbo.bin`.
 - There is no UI model selector. Platform selection is automatic so saved transcription signatures never ambiguously mix engines.
-- Both transcription backends use the same fixed language hint for deterministic decoding.
+- Every project stores a `language_mode`. `standard` is the default and maps internally to the existing Russian Whisper hint without exposing a language code in the UI; `auto` passes no hint to MLX/faster-whisper and `auto` to whisper.cpp. The project toolbar labels these modes `Стандартна` and `Автовизначення`. The setting applies to new or explicitly repeated transcriptions; it never silently replaces existing text and cannot change while a transcription queue is queued, processing, or paused. Include the mode in every checkpoint signature.
 - Whisper runs in a subprocess so its MLX/Metal memory is released after each file.
 - Media is split into 30-minute core ranges with two-second overlap. `ffmpeg` extracts one temporary mono WAV at a time; completed parts are checkpointed in `transcription_parts`. Resume reuses all completed parts and repeats only the interrupted part. Midpoint ownership removes overlap duplicates when timestamps are reassembled.
 - Only Whisper may use Metal/GPU resources.
@@ -306,6 +306,10 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 - Draft GitHub Release hosting, embedded build identity, macOS Developer ID signing/notarization, Windows Authenticode signing, signed application-update manifests, verified in-app downloads, and native installer handoff are implemented. A protected release environment must provide the platform signing certificates.
 
 ## Changelog
+
+### 2026-07-29 — project language mode
+
+- Added a persistent project-wide transcription language setting in the top toolbar. Existing projects migrate to `standard`; new projects use it by default. The alternative `auto` mode uses Whisper language detection consistently across MLX, faster-whisper, and whisper.cpp. Language mode is carried into the isolated subprocess and checkpoint signature, while busy queues reject a mid-run mode change.
 
 ### 2026-07-29
 

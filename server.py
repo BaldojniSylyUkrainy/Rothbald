@@ -223,7 +223,8 @@ def init_storage() -> None:
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS projects (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE,
-                created_at REAL NOT NULL, scanned_at REAL NOT NULL
+                created_at REAL NOT NULL, scanned_at REAL NOT NULL,
+                language_mode TEXT NOT NULL DEFAULT 'standard'
             );
             CREATE TABLE IF NOT EXISTS videos (
                 id TEXT PRIMARY KEY,
@@ -293,6 +294,10 @@ def init_storage() -> None:
             connection.execute("ALTER TABLE projects ADD COLUMN queue_paused INTEGER NOT NULL DEFAULT 0")
         if "queue_generation" not in project_columns:
             connection.execute("ALTER TABLE projects ADD COLUMN queue_generation INTEGER NOT NULL DEFAULT 0")
+        if "language_mode" not in project_columns:
+            connection.execute(
+                "ALTER TABLE projects ADD COLUMN language_mode TEXT NOT NULL DEFAULT 'standard'"
+            )
         chunk_columns = {row["name"] for row in connection.execute("PRAGMA table_info(semantic_chunks)")}
         if "transcript_revision" not in chunk_columns:
             connection.execute(
@@ -477,7 +482,11 @@ def claim_transcription_job(video_id: str, generation: int) -> sqlite3.Row | Non
         )
         if cursor.rowcount != 1:
             return None
-        return connection.execute("SELECT * FROM videos WHERE id=?", (video_id,)).fetchone()
+        return connection.execute(
+            """SELECT v.*,p.language_mode FROM videos v
+               JOIN projects p ON p.id=v.project_id WHERE v.id=?""",
+            (video_id,),
+        ).fetchone()
 
 
 def job_still_current(video_id: str, generation: int) -> bool:
@@ -1218,10 +1227,10 @@ def scan_project(project_id: str) -> int:
     return len(staged)
 
 
-def transcription_signature(row: sqlite3.Row) -> str:
+def transcription_signature(row: sqlite3.Row, language_mode: str = "standard") -> str:
     value = (
         f"{row['size']}:{row['mtime']:.6f}:"
-        f"{transcription_model()}:{TRANSCRIPTION_PART_SECONDS}"
+        f"{transcription_model()}:{TRANSCRIPTION_PART_SECONDS}:{language_mode}"
     )
     return hashlib.sha256(value.encode()).hexdigest()
 
@@ -1230,16 +1239,21 @@ def transcription_model() -> str:
     return whisper_spec_for_device().repo_id
 
 
-def transcription_command(input_path: Path, output_path: Path) -> list[str]:
+def transcription_command(
+    input_path: Path, output_path: Path, language_mode: str = "standard"
+) -> list[str]:
     model = transcription_model()
     if getattr(sys, "frozen", False):
-        return [sys.executable, "--transcribe", str(input_path), str(output_path), model]
+        return [
+            sys.executable, "--transcribe", str(input_path), str(output_path), model, language_mode,
+        ]
     return [
         sys.executable,
         str(SOURCE_ROOT / "transcribe_video.py"),
         str(input_path),
         str(output_path),
         model,
+        language_mode,
     ]
 
 
@@ -1401,7 +1415,8 @@ def transcribe(video_id: str, generation: int) -> None:
     if not row:
         return
     source = Path(row["source_path"])
-    signature = transcription_signature(row)
+    language_mode = str(row["language_mode"] or "standard")
+    signature = transcription_signature(row, language_mode)
     try:
         if not source.is_file():
             raise RuntimeError("Відео недоступне — перевір диск або розташування файлу")
@@ -1472,7 +1487,7 @@ def transcribe(video_id: str, generation: int) -> None:
                 run_managed_process(
                     video_id,
                     generation,
-                    transcription_command(transcription_source, result),
+                    transcription_command(transcription_source, result, language_mode),
                     consume_progress,
                 )
                 payload = json.loads(result.read_text(encoding="utf-8"))
@@ -1809,6 +1824,9 @@ class Handler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"/api/projects/([0-9a-f]+)/retranscribe", path)
         if match:
             return self.retranscribe_project(match.group(1))
+        match = re.fullmatch(r"/api/projects/([0-9a-f]+)/language", path)
+        if match:
+            return self.update_project_language(match.group(1))
         match = re.fullmatch(r"/api/projects/([0-9a-f]+)/(pause|resume|abort)", path)
         if match:
             return self.control_queue(match.group(1), match.group(2))
@@ -1927,6 +1945,38 @@ class Handler(BaseHTTPRequestHandler):
         for row in rows:
             jobs.put(("transcribe", row["id"], generation))
         respond(self, {"queued": len(rows)}, 202)
+
+    def update_project_language(self, project_id: str) -> None:
+        try:
+            length = min(16_384, max(0, int(self.headers.get("Content-Length", "0") or 0)))
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            language_mode = str(payload.get("language_mode", ""))
+            if language_mode not in {"standard", "auto"}:
+                raise ValueError("Невідомий режим мови")
+            with db() as connection:
+                project = connection.execute(
+                    "SELECT id FROM projects WHERE id=?", (project_id,)
+                ).fetchone()
+                if not project:
+                    return respond(self, {"error": "Проєкт не знайдено"}, 404)
+                unfinished = connection.execute(
+                    """SELECT COUNT(*) FROM videos WHERE project_id=?
+                       AND status IN ('queued','processing','paused')""",
+                    (project_id,),
+                ).fetchone()[0]
+                if unfinished:
+                    return respond(
+                        self,
+                        {"error": "Спочатку заверши або скинь поточну чергу розпізнавання"},
+                        409,
+                    )
+                connection.execute(
+                    "UPDATE projects SET language_mode=? WHERE id=?",
+                    (language_mode, project_id),
+                )
+            respond(self, {"language_mode": language_mode})
+        except (ValueError, json.JSONDecodeError) as exc:
+            respond(self, {"error": str(exc)}, 400)
 
     def delete_project(self, project_id: str) -> None:
         with db() as connection:

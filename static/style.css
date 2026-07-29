@@ -266,6 +266,16 @@ aside { min-width: 0; border-right: 1px solid var(--line); padding-right: 28px; 
 .project-toolbar button { padding: 8px 11px; background: transparent; color: var(--muted); font-size: 10px; }
 .project-toolbar button:hover { background: var(--paper); color: var(--text); }
 .project-toolbar .project-back { border-color: #56565c; color: var(--text); letter-spacing: .06em; }
+.project-language-setting {
+  display: grid; grid-template-columns: auto minmax(150px, 190px); align-items: center;
+  gap: 3px 10px; min-width: 0; margin-left: auto;
+}
+.project-language-label {
+  color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
+}
+.project-language-setting .choice-picker { grid-row: span 2; min-width: 150px; }
+.project-language-setting .choice-trigger { padding: 8px 10px; font-size: 11px; }
+.project-language-setting small { color: #77777e; font-size: 9px; line-height: 1.25; }
 .project-toolbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .project-toolbar button.danger { color: var(--danger); }
 .project-toolbar button.danger:hover { border-color: var(--danger); background: #c79b9f12; color: var(--danger); }
@@ -431,6 +441,7 @@ aside { min-width: 0; border-right: 1px solid var(--line); padding-right: 28px; 
   .queue-controls { align-items: stretch; flex-wrap: wrap; }
   .queue-controls span { width: 100%; margin-left: 0; text-align: left; }
   .project-toolbar { align-items: stretch; flex-direction: column; }
+  .project-language-setting { margin-left: 0; }
   .project-toolbar-actions { justify-content: stretch; }
   .project-toolbar-actions button { flex: 1 1 auto; }
   .app-footer { padding: 5px 16px; }

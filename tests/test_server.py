@@ -321,6 +321,12 @@ class HardwarePreflightTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             transcribe_video.resolve_faster_whisper_device("cuda:3", 1)
 
+    def test_project_language_modes_map_to_whisper_hints(self) -> None:
+        self.assertEqual(transcribe_video.whisper_language("standard"), "ru")
+        self.assertIsNone(transcribe_video.whisper_language("auto"))
+        with self.assertRaises(RuntimeError):
+            transcribe_video.whisper_language("unknown")
+
     def test_whisper_cpp_json_is_normalized_to_existing_segment_contract(self) -> None:
         parsed = transcribe_video.parse_whisper_cpp_result(
             {
@@ -367,9 +373,11 @@ class HardwarePreflightTests(unittest.TestCase):
                 root / "input.wav",
                 root / "output.json",
                 "vulkan:3",
+                "auto",
             )
         self.assertEqual(result["text"], "Готово")
         self.assertEqual(calls[0][1]["GGML_VK_VISIBLE_DEVICES"], "3")
+        self.assertEqual(calls[0][0][calls[0][0].index("--language") + 1], "auto")
         self.assertIn("--no-gpu", calls[1][0])
         self.assertNotIn("GGML_VK_VISIBLE_DEVICES", calls[1][1])
 
@@ -450,6 +458,10 @@ class MigrationTests(TemporaryStorageTest):
         server.init_storage()
         with server.db() as migrated:
             self.assertEqual(migrated.execute("SELECT COUNT(*) FROM segments").fetchone()[0], 1)
+            self.assertEqual(
+                migrated.execute("SELECT language_mode FROM projects").fetchone()[0],
+                "standard",
+            )
             migrated.execute(
                 "INSERT INTO projects(id,name,path,created_at,scanned_at,last_opened_at) VALUES (?,?,?,?,?,?)",
                 ("b" * 32, "B", "/missing-b", now, now, now),
@@ -761,9 +773,18 @@ class SearchAndUtilityTests(unittest.TestCase):
 
     def test_frozen_transcription_uses_the_packaged_executable(self) -> None:
         with mock.patch.object(server.sys, "frozen", True, create=True):
-            command = server.transcription_command(Path("/tmp/input.wav"), Path("/tmp/output.json"))
+            command = server.transcription_command(
+                Path("/tmp/input.wav"), Path("/tmp/output.json"), "auto"
+            )
         self.assertEqual(command[:2], [server.sys.executable, "--transcribe"])
-        self.assertEqual(command[-1], server.transcription_model())
+        self.assertEqual(command[-2:], [server.transcription_model(), "auto"])
+
+    def test_language_mode_changes_transcription_checkpoint_signature(self) -> None:
+        row = {"size": 10, "mtime": 123.5}
+        self.assertNotEqual(
+            server.transcription_signature(row, "standard"),
+            server.transcription_signature(row, "auto"),
+        )
 
 
 class ModelBootstrapTests(unittest.TestCase):
@@ -1002,6 +1023,14 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("backendBusy: null", script)
         self.assertIn("wasBusy === true && !state.backendBusy", script)
         self.assertIn("renderBackendStatus(await api('/api/hardware'))", script)
+
+    def test_project_language_picker_hides_internal_default_language_code(self) -> None:
+        markup = (ROOT / "static/index.html").read_text(encoding="utf-8")
+        script = (ROOT / "static/app.js").read_text(encoding="utf-8")
+        self.assertIn("Мова розпізнавання", markup)
+        self.assertIn("Стандартна", markup)
+        self.assertIn("Автовизначення", script)
+        self.assertIn("data-picker-kind=\"language\"", markup)
 
     def test_release_workflow_signs_windows_application_and_installer(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")

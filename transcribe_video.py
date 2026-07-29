@@ -27,13 +27,21 @@ def resolve_faster_whisper_device(preference: str, cuda_count: int) -> tuple[str
     return "cpu", 0, "int8"
 
 
-def mlx_transcribe(input_path: Path, model: str) -> dict:
+def whisper_language(language_mode: str) -> str | None:
+    if language_mode == "standard":
+        return "ru"
+    if language_mode == "auto":
+        return None
+    raise RuntimeError("Невідомий режим мови розпізнавання")
+
+
+def mlx_transcribe(input_path: Path, model: str, language_mode: str = "standard") -> dict:
     import mlx_whisper
 
     return mlx_whisper.transcribe(
         str(input_path),
         path_or_hf_repo=model,
-        language="ru",
+        language=whisper_language(language_mode),
         task="transcribe",
         word_timestamps=False,
         condition_on_previous_text=True,
@@ -42,7 +50,7 @@ def mlx_transcribe(input_path: Path, model: str) -> dict:
     )
 
 
-def faster_transcribe(input_path: Path, model: str) -> dict:
+def faster_transcribe(input_path: Path, model: str, language_mode: str = "standard") -> dict:
     import ctranslate2
     from faster_whisper import WhisperModel
 
@@ -58,7 +66,7 @@ def faster_transcribe(input_path: Path, model: str) -> dict:
     )
     segments, info = engine.transcribe(
         str(input_path),
-        language="ru",
+        language=whisper_language(language_mode),
         task="transcribe",
         beam_size=5,
         condition_on_previous_text=True,
@@ -70,7 +78,8 @@ def faster_transcribe(input_path: Path, model: str) -> dict:
     for segment in segments:
         items.append({"start": float(segment.start), "end": float(segment.end), "text": segment.text})
         print(f"{min(100, float(segment.end) / duration * 100):.1f}%", file=sys.stderr, flush=True)
-    return {"text": " ".join(item["text"] for item in items), "language": "ru", "segments": items}
+    detected = str(getattr(info, "language", "") or whisper_language(language_mode) or "")
+    return {"text": " ".join(item["text"] for item in items), "language": detected, "segments": items}
 
 
 def parse_whisper_cpp_result(payload: dict) -> dict:
@@ -133,7 +142,9 @@ def _run_whisper_cpp(command: list[str], environment: dict[str, str]) -> tuple[i
     return process.wait(), "\n".join(errors[-80:])
 
 
-def whisper_cpp_transcribe(input_path: Path, output_path: Path, preference: str) -> dict:
+def whisper_cpp_transcribe(
+    input_path: Path, output_path: Path, preference: str, language_mode: str = "standard"
+) -> dict:
     executable = runtime_tool_path("whisper-cli")
     if not executable:
         raise RuntimeError("Компонент Whisper Vulkan відсутній у цій збірці Rothbald")
@@ -151,7 +162,7 @@ def whisper_cpp_transcribe(input_path: Path, output_path: Path, preference: str)
         "--file",
         str(input_path),
         "--language",
-        "ru",
+        whisper_language(language_mode) or "auto",
         "--beam-size",
         "5",
         "--output-json",
@@ -181,19 +192,20 @@ def whisper_cpp_transcribe(input_path: Path, output_path: Path, preference: str)
 
 
 def main() -> None:
-    if len(sys.argv) != 4:
-        raise SystemExit("usage: transcribe_video.py INPUT OUTPUT MODEL")
+    if len(sys.argv) not in {4, 5}:
+        raise SystemExit("usage: transcribe_video.py INPUT OUTPUT MODEL [LANGUAGE_MODE]")
     input_path = Path(sys.argv[1])
     output_path = Path(sys.argv[2])
     model = sys.argv[3]
+    language_mode = sys.argv[4] if len(sys.argv) == 5 else "standard"
 
     preference = os.environ.get("ROTHBALD_DEVICE", "auto").lower()
     if sys.platform == "win32" and preference.startswith("vulkan:"):
-        result = whisper_cpp_transcribe(input_path, output_path, preference)
+        result = whisper_cpp_transcribe(input_path, output_path, preference, language_mode)
     elif sys.platform == "win32":
-        result = faster_transcribe(input_path, model)
+        result = faster_transcribe(input_path, model, language_mode)
     else:
-        result = mlx_transcribe(input_path, model)
+        result = mlx_transcribe(input_path, model, language_mode)
     payload = {
         "text": result.get("text", ""),
         "language": result.get("language", "ru"),
