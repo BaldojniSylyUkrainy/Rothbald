@@ -5,6 +5,7 @@ const state = {
   searchControllers: [], searchLoading: { exact: false, semantic: false },
   appInfo: null, appReady: false, updateStarted: false, updateManual: false, updateTimer: null,
   updatePollInFlight: false, updateActionPending: false, updateSnapshot: null, updateReturnFocus: null,
+  backendBusy: null,
 };
 
 const $ = selector => document.querySelector(selector);
@@ -386,15 +387,19 @@ function renderBackendStatus(report) {
 
 function updateBackendAvailability() {
   const select = $('#appBackendSelect');
-  const projectBusy = state.projects.some(project =>
-    +project.busy_count > 0 || +project.semantic_busy_count > 0
-  );
+  const projectBusy = projectsAreBusy();
   select.disabled = !state.appReady || select.dataset.serverAllowed === '0' || projectBusy;
   select.parentElement.title = select.disabled
     ? select.dataset.blocker || (projectBusy
       ? 'Backend не можна змінювати під час розпізнавання або індексації.'
       : 'Backend стане доступним після підготовки застосунку.')
     : 'Змінити backend розпізнавання';
+}
+
+function projectsAreBusy() {
+  return state.projects.some(project =>
+    +project.busy_count > 0 || +project.semantic_busy_count > 0
+  );
 }
 
 async function changeBackend(device = $('#appBackendSelect').value) {
@@ -583,9 +588,14 @@ function renderProjectHome() {
 async function loadProjects(showErrors = true) {
   try {
     state.projects = await api('/api/projects');
+    const wasBusy = state.backendBusy;
+    state.backendBusy = projectsAreBusy();
     renderProjectHome();
     if (state.project && state.videos.length) renderQueue();
     updateBackendAvailability();
+    if (wasBusy === true && !state.backendBusy) {
+      renderBackendStatus(await api('/api/hardware'));
+    }
   } catch (error) {
     if (showErrors) toast(error.message);
     throw error;

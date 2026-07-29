@@ -67,10 +67,12 @@ PORT = int(os.environ.get("VIDEO_SEARCH_PORT", "8765"))
 TRANSCRIPTION_PART_SECONDS = 30 * 60
 TRANSCRIPTION_OVERLAP_SECONDS = 2
 FFPROBE_TIMEOUT_SECONDS = 45
+DURATION_RETRY_SECONDS = 24 * 60 * 60
 PROCESS_WATCHDOG_SECONDS = 20 * 60
 BACKUP_KEEP = 5
 ALLOWED = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".mp3", ".m4a", ".wav", ".flac", ".ogg"}
 jobs: queue.Queue[tuple[str, str, int]] = queue.Queue()
+duration_jobs: queue.Queue[str] = queue.Queue()
 embedding_lock = threading.RLock()
 process_lock = threading.RLock()
 active_processes: dict[str, subprocess.Popen] = {}
@@ -90,6 +92,9 @@ update_manager = UpdateManager(
 folder_picker_callback = None
 runtime_lock = threading.Lock()
 runtime_started = False
+runtime_stopping = threading.Event()
+worker_thread: threading.Thread | None = None
+duration_worker_thread: threading.Thread | None = None
 
 
 class JobInterrupted(RuntimeError):
@@ -173,6 +178,7 @@ def _rebuild_videos_table(connection: sqlite3.Connection) -> None:
                 error TEXT,
                 progress REAL NOT NULL DEFAULT 0,
                 media_duration REAL NOT NULL DEFAULT 0,
+                duration_checked_at REAL NOT NULL DEFAULT 0,
                 started_at REAL,
                 semantic_status TEXT NOT NULL DEFAULT 'pending',
                 semantic_error TEXT,
@@ -185,11 +191,13 @@ def _rebuild_videos_table(connection: sqlite3.Connection) -> None:
             INSERT INTO videos_new(
                 id,project_id,original_name,source_path,relative_path,available,size,mtime,
                 content_fingerprint,status,error,progress,media_duration,started_at,
+                duration_checked_at,
                 semantic_status,semantic_error,semantic_progress,transcript_revision,
                 semantic_revision,created_at,updated_at
             )
             SELECT id,project_id,original_name,source_path,relative_path,available,size,mtime,
                    content_fingerprint,status,error,progress,media_duration,started_at,
+                   0,
                    semantic_status,semantic_error,semantic_progress,transcript_revision,
                    semantic_revision,created_at,updated_at
             FROM videos;
@@ -264,6 +272,7 @@ def init_storage() -> None:
         migrations = {
             "progress": "ALTER TABLE videos ADD COLUMN progress REAL NOT NULL DEFAULT 0",
             "media_duration": "ALTER TABLE videos ADD COLUMN media_duration REAL NOT NULL DEFAULT 0",
+            "duration_checked_at": "ALTER TABLE videos ADD COLUMN duration_checked_at REAL NOT NULL DEFAULT 0",
             "started_at": "ALTER TABLE videos ADD COLUMN started_at REAL",
             "semantic_status": "ALTER TABLE videos ADD COLUMN semantic_status TEXT NOT NULL DEFAULT 'pending'",
             "semantic_error": "ALTER TABLE videos ADD COLUMN semantic_error TEXT",
@@ -357,15 +366,6 @@ def init_storage() -> None:
             "INSERT OR IGNORE INTO segment_terms(segment_id,term) VALUES (?,?)",
             [(row["id"], term) for row in missing_terms for term in set(row["normalized"].split())],
         )
-        missing_durations = connection.execute(
-            "SELECT id, source_path FROM videos WHERE media_duration<=0"
-        ).fetchall()
-    # ffprobe may wait on a sleeping or disconnected drive. Never keep a SQLite write lock while it runs.
-    for row in missing_durations:
-        source = Path(row["source_path"])
-        duration = media_duration(source) if source.is_file() else 0
-        with db() as connection:
-            connection.execute("UPDATE videos SET media_duration=? WHERE id=?", (duration, row["id"]))
 
 
 def normalize(text: str) -> str:
@@ -622,6 +622,41 @@ def media_duration(path: Path) -> float:
         return max(0.0, float(result.stdout.strip()))
     except ValueError:
         return 0.0
+
+
+def probe_media_duration(video_id: str) -> None:
+    """Probe one file outside SQLite locks and commit only if the row is unchanged."""
+    with db() as connection:
+        row = connection.execute(
+            "SELECT source_path,size,mtime,available,media_duration FROM videos WHERE id=?",
+            (video_id,),
+        ).fetchone()
+    if not row or not row["available"] or row["media_duration"] > 0:
+        return
+    source = Path(row["source_path"])
+    duration = media_duration(source) if source.is_file() else 0.0
+    checked_at = time.time()
+    with db() as connection:
+        connection.execute(
+            """UPDATE videos SET media_duration=?,duration_checked_at=?
+               WHERE id=? AND source_path=? AND size=? AND mtime=? AND media_duration<=0""",
+            (duration, checked_at, video_id, row["source_path"], row["size"], row["mtime"]),
+        )
+
+
+def enqueue_due_duration_probes() -> int:
+    """Schedule retryable ffprobe work without delaying the application window."""
+    cutoff = time.time() - DURATION_RETRY_SECONDS
+    with db() as connection:
+        rows = connection.execute(
+            """SELECT v.id FROM videos v
+               WHERE v.available=1 AND v.media_duration<=0 AND v.duration_checked_at<?
+               ORDER BY v.created_at,v.original_name""",
+            (cutoff,),
+        ).fetchall()
+    for row in rows:
+        duration_jobs.put(row["id"])
+    return len(rows)
 
 
 def file_fingerprint(path: Path) -> str:
@@ -1080,34 +1115,29 @@ def exact_search(raw: str, project_id: str) -> list[dict]:
 def scan_project(project_id: str) -> int:
     with db() as connection:
         project = connection.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        existing = connection.execute(
+            "SELECT * FROM videos WHERE project_id=?", (project_id,)
+        ).fetchall()
     if not project:
         raise ValueError("Проєкт не знайдено")
     folder = Path(project["path"])
     if not folder.is_dir():
         raise ValueError("Папка недоступна. Перевір, чи доступний диск або розташування")
 
-    with db() as connection:
-        connection.execute("UPDATE videos SET available=0 WHERE project_id=?", (project_id,))
-    to_queue: list[str] = []
-    found_count = 0
+    by_relative = {row["relative_path"]: row for row in existing if row["relative_path"]}
+    by_source = {row["source_path"]: row for row in existing}
+    staged: list[dict] = []
+    now = time.time()
+    cutoff = now - DURATION_RETRY_SECONDS
+    # Complete every filesystem read before changing the database. If an external
+    # drive disappears mid-scan, the last known-good availability state survives.
     for path in folder.rglob("*"):
         if not path.is_file() or path.suffix.lower() not in ALLOWED:
             continue
-        found_count += 1
         source = str(path.resolve())
         relative = path.relative_to(folder).as_posix()
         stat = path.stat()
-        now = time.time()
-        with db() as connection:
-            old = connection.execute(
-                "SELECT * FROM videos WHERE project_id=? AND relative_path=?",
-                (project_id, relative),
-            ).fetchone()
-            if not old:
-                old = connection.execute(
-                    "SELECT * FROM videos WHERE project_id=? AND source_path=?",
-                    (project_id, source),
-                ).fetchone()
+        old = by_relative.get(relative) or by_source.get(source)
         video_id = old["id"] if old else hashlib.sha256(f"{project_id}\0{relative}".encode()).hexdigest()[:32]
         metadata_changed = bool(
             old and (old["size"] != stat.st_size or abs(old["mtime"] - stat.st_mtime) > .001)
@@ -1121,10 +1151,7 @@ def scan_project(project_id: str) -> int:
             old
             and (
                 old["size"] != stat.st_size
-                or (
-                    old["content_fingerprint"]
-                    and old["content_fingerprint"] != fingerprint
-                )
+                or (old["content_fingerprint"] and old["content_fingerprint"] != fingerprint)
                 or (
                     not old["content_fingerprint"]
                     and abs(old["mtime"] - stat.st_mtime) > .001
@@ -1132,37 +1159,63 @@ def scan_project(project_id: str) -> int:
             )
         )
         status = "ready" if not old or changed else old["status"]
-        duration = old["media_duration"] if old and not changed and old["media_duration"] > 0 else media_duration(path)
-        progress = 1.0 if status == "done" else (0.0 if changed or not old else old["progress"])
-        with db() as connection:
+        duration = float(old["media_duration"]) if old and not changed else 0.0
+        duration_checked_at = float(old["duration_checked_at"]) if old and not changed else 0.0
+        staged.append({
+            "id": video_id,
+            "name": path.name,
+            "source": source,
+            "relative": relative,
+            "size": stat.st_size,
+            "mtime": stat.st_mtime,
+            "fingerprint": fingerprint,
+            "status": status,
+            "progress": 1.0 if status == "done" else (0.0 if changed or not old else old["progress"]),
+            "duration": duration,
+            "duration_checked_at": duration_checked_at,
+        })
+
+    to_queue: list[str] = []
+    duration_queue: list[str] = []
+    with db() as connection:
+        connection.execute("UPDATE videos SET available=0 WHERE project_id=?", (project_id,))
+        for item in staged:
             connection.execute(
                 """
                 INSERT INTO videos(
                     id,project_id,original_name,source_path,relative_path,available,size,mtime,
-                    content_fingerprint,status,progress,media_duration,created_at,updated_at
-                ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                    content_fingerprint,status,progress,media_duration,duration_checked_at,created_at,updated_at
+                ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id, original_name=excluded.original_name,
                     source_path=excluded.source_path, relative_path=excluded.relative_path, available=1,
                     size=excluded.size, mtime=excluded.mtime,content_fingerprint=excluded.content_fingerprint,
                     status=excluded.status, progress=excluded.progress,
-                    media_duration=excluded.media_duration, updated_at=excluded.updated_at
+                    media_duration=excluded.media_duration,duration_checked_at=excluded.duration_checked_at,
+                    updated_at=excluded.updated_at
                 """,
-                (video_id, project_id, path.name, source, relative, stat.st_size, stat.st_mtime, fingerprint, status, progress, duration, now, now),
+                (
+                    item["id"], project_id, item["name"], item["source"], item["relative"],
+                    item["size"], item["mtime"], item["fingerprint"], item["status"],
+                    item["progress"], item["duration"], item["duration_checked_at"], now, now,
+                ),
             )
-            if status == "ready":
+            if item["status"] == "ready":
                 next_status = "paused" if project["queue_paused"] else "queued"
                 connection.execute(
                     "UPDATE videos SET status=?, progress=0, started_at=NULL, error=NULL WHERE id=?",
-                    (next_status, video_id),
+                    (next_status, item["id"]),
                 )
                 if next_status == "queued":
-                    to_queue.append(video_id)
-
-    with db() as connection:
-        connection.execute("UPDATE projects SET scanned_at=? WHERE id=?", (time.time(), project_id))
+                    to_queue.append(item["id"])
+            if item["duration"] <= 0 and item["duration_checked_at"] < cutoff:
+                duration_queue.append(item["id"])
+        connection.execute("UPDATE projects SET scanned_at=? WHERE id=?", (now, project_id))
+    generation = int(project["queue_generation"])
+    for video_id in duration_queue:
+        duration_jobs.put(video_id)
     for video_id in to_queue:
-        jobs.put(("transcribe", video_id, int(project["queue_generation"])))
-    return found_count
+        jobs.put(("transcribe", video_id, generation))
+    return len(staged)
 
 
 def transcription_signature(row: sqlite3.Row) -> str:
@@ -1349,10 +1402,19 @@ def transcribe(video_id: str, generation: int) -> None:
         return
     source = Path(row["source_path"])
     signature = transcription_signature(row)
-    ranges = transcription_ranges(float(row["media_duration"]))
     try:
         if not source.is_file():
             raise RuntimeError("Відео недоступне — перевір диск або розташування файлу")
+        duration = float(row["media_duration"])
+        if duration <= 0:
+            duration = media_duration(source)
+            with db() as connection:
+                connection.execute(
+                    """UPDATE videos SET media_duration=?,duration_checked_at=?
+                       WHERE id=? AND status='processing'""",
+                    (duration, time.time(), video_id),
+                )
+        ranges = transcription_ranges(duration)
         with db() as connection:
             connection.execute(
                 "DELETE FROM transcription_parts WHERE video_id=? AND signature!=?",
@@ -1451,10 +1513,17 @@ def transcribe(video_id: str, generation: int) -> None:
 
 
 def worker() -> None:
-    while True:
-        action, video_id, generation = jobs.get()
+    while not runtime_stopping.is_set():
         try:
+            action, video_id, generation = jobs.get(timeout=0.25)
+        except queue.Empty:
+            continue
+        try:
+            if runtime_stopping.is_set():
+                continue
             model_manager.wait()
+            if runtime_stopping.is_set():
+                continue
             if action == "semantic":
                 row = get_video(video_id)
                 if row and row["semantic_status"] in {"pending", "error"}:
@@ -1481,18 +1550,112 @@ def worker() -> None:
             jobs.task_done()
 
 
+def duration_worker() -> None:
+    while not runtime_stopping.is_set():
+        try:
+            video_id = duration_jobs.get(timeout=0.25)
+        except queue.Empty:
+            continue
+        try:
+            if not runtime_stopping.is_set():
+                probe_media_duration(video_id)
+        except Exception as exc:
+            print(f"Duration probe failed for {video_id}: {exc}", file=sys.stderr)
+        finally:
+            duration_jobs.task_done()
+
+
 def start_runtime() -> None:
     """Start model work only after the machine check has been accepted."""
-    global runtime_started
+    global runtime_started, worker_thread, duration_worker_thread
     if not hardware_preflight.apply_saved_device():
         raise ValueError("Спочатку підтвердь перевірку сумісності комп’ютера")
     model_manager.start()
     with runtime_lock:
         if runtime_started:
             return
+        runtime_stopping.clear()
         runtime_started = True
-        threading.Thread(target=worker, daemon=True, name="rothbald-worker").start()
+        worker_thread = threading.Thread(target=worker, daemon=True, name="rothbald-worker")
+        worker_thread.start()
+        duration_worker_thread = threading.Thread(
+            target=duration_worker, daemon=True, name="rothbald-duration-worker"
+        )
+        duration_worker_thread.start()
+        enqueue_due_duration_probes()
         resume_pending_semantic_indexing()
+
+
+def shutdown_runtime(timeout: float = 7.0) -> None:
+    """Pause unfinished work and terminate every managed child before app exit."""
+    global runtime_started, worker_thread, duration_worker_thread
+    runtime_stopping.set()
+    try:
+        if DB_PATH.is_file():
+            with db() as connection:
+                project_ids = [
+                    row[0] for row in connection.execute(
+                        """SELECT DISTINCT project_id FROM videos
+                           WHERE status IN ('queued','processing')"""
+                    ).fetchall()
+                ]
+                for project_id in project_ids:
+                    connection.execute(
+                        """UPDATE projects SET queue_paused=1,
+                           queue_generation=queue_generation+1 WHERE id=?""",
+                        (project_id,),
+                    )
+                connection.execute(
+                    """UPDATE videos SET status='paused',started_at=NULL,
+                       error='Черга очікує ручного продовження після закриття застосунку',updated_at=?
+                       WHERE status IN ('queued','processing')""",
+                    (time.time(),),
+                )
+                connection.execute(
+                    "UPDATE videos SET semantic_status='pending',semantic_progress=0 WHERE semantic_status='indexing'"
+                )
+    except sqlite3.Error as exc:
+        print(f"Could not persist shutdown state: {exc}", file=sys.stderr)
+
+    with process_lock:
+        running = list(active_processes.items())
+        for video_id, _process in running:
+            interrupt_reasons[video_id] = "shutdown"
+    for _video_id, process in running:
+        if process.poll() is None:
+            terminate_process_group(process)
+
+    deadline = time.monotonic() + max(0.0, timeout)
+    for _video_id, process in running:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+    while True:
+        try:
+            jobs.get_nowait()
+        except queue.Empty:
+            break
+        else:
+            jobs.task_done()
+    while True:
+        try:
+            duration_jobs.get_nowait()
+        except queue.Empty:
+            break
+        else:
+            duration_jobs.task_done()
+    for thread in (worker_thread, duration_worker_thread):
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    with runtime_lock:
+        runtime_started = False
+        worker_thread = None
+        duration_worker_thread = None
 
 
 def resume_pending_semantic_indexing() -> None:
@@ -1941,6 +2104,7 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nЗупинено")
     finally:
+        shutdown_runtime()
         server.server_close()
 
 

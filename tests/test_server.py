@@ -465,6 +465,27 @@ class MigrationTests(TemporaryStorageTest):
 
 
 class QueueTests(TemporaryStorageTest):
+    def tearDown(self) -> None:
+        server.runtime_stopping.clear()
+        with server.process_lock:
+            server.active_processes.clear()
+            server.interrupt_reasons.clear()
+        while True:
+            try:
+                server.jobs.get_nowait()
+            except server.queue.Empty:
+                break
+            else:
+                server.jobs.task_done()
+        while True:
+            try:
+                server.duration_jobs.get_nowait()
+            except server.queue.Empty:
+                break
+            else:
+                server.duration_jobs.task_done()
+        super().tearDown()
+
     def test_backend_change_is_blocked_while_processing_queue_is_active(self) -> None:
         _project_id, video_id = self.add_project_and_video(paused=0)
         with mock.patch.object(server, "runtime_started", True), \
@@ -561,6 +582,78 @@ class QueueTests(TemporaryStorageTest):
             video = connection.execute("SELECT status,progress FROM videos WHERE id=?", (video_id,)).fetchone()
         self.assertEqual(video["status"], "done")
         self.assertEqual(video["progress"], 1)
+
+    def test_failed_scan_preserves_last_known_availability(self) -> None:
+        project_id, video_id = self.add_project_and_video(paused=0)
+        source = self.root / "one.mp4"
+        source.write_bytes(b"0123456789")
+        before = 123.0
+        with server.db() as connection:
+            connection.execute(
+                "UPDATE projects SET scanned_at=? WHERE id=?", (before, project_id)
+            )
+            connection.execute(
+                """UPDATE videos SET available=1,size=?,mtime=?,content_fingerprint=? WHERE id=?""",
+                (source.stat().st_size, source.stat().st_mtime, server.file_fingerprint(source), video_id),
+            )
+
+        def interrupted_walk():
+            yield source
+            raise OSError("drive disconnected")
+
+        with mock.patch.object(Path, "rglob", return_value=interrupted_walk()):
+            with self.assertRaisesRegex(OSError, "drive disconnected"):
+                server.scan_project(project_id)
+
+        with server.db() as connection:
+            video = connection.execute("SELECT available FROM videos WHERE id=?", (video_id,)).fetchone()
+            project = connection.execute("SELECT scanned_at FROM projects WHERE id=?", (project_id,)).fetchone()
+        self.assertEqual(video["available"], 1)
+        self.assertEqual(project["scanned_at"], before)
+
+    def test_scan_defers_duration_probe_to_background_queue(self) -> None:
+        project_id, video_id = self.add_project_and_video(paused=0)
+        source = self.root / "one.mp4"
+        source.write_bytes(b"0123456789")
+        with mock.patch.object(server, "media_duration", side_effect=AssertionError("must be background")):
+            self.assertEqual(server.scan_project(project_id), 1)
+        self.assertEqual(server.duration_jobs.get_nowait(), video_id)
+        server.duration_jobs.task_done()
+
+    def test_duration_probe_backoff_skips_recent_failure(self) -> None:
+        _project_id, video_id = self.add_project_and_video(paused=0)
+        with server.db() as connection:
+            connection.execute(
+                "UPDATE videos SET available=1,media_duration=0,duration_checked_at=? WHERE id=?",
+                (time.time(), video_id),
+            )
+        self.assertEqual(server.enqueue_due_duration_probes(), 0)
+        with server.db() as connection:
+            connection.execute(
+                "UPDATE videos SET duration_checked_at=? WHERE id=?",
+                (time.time() - server.DURATION_RETRY_SECONDS - 1, video_id),
+            )
+        self.assertEqual(server.enqueue_due_duration_probes(), 1)
+        self.assertEqual(server.duration_jobs.get_nowait(), video_id)
+        server.duration_jobs.task_done()
+
+    def test_shutdown_pauses_queue_and_terminates_managed_process(self) -> None:
+        project_id, video_id = self.add_project_and_video(paused=0)
+        process = mock.Mock()
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        with server.process_lock:
+            server.active_processes[video_id] = process
+        with mock.patch.object(server, "terminate_process_group") as terminate:
+            server.shutdown_runtime(timeout=0.1)
+        terminate.assert_called_once_with(process)
+        with server.db() as connection:
+            project = connection.execute(
+                "SELECT queue_paused,queue_generation FROM projects WHERE id=?", (project_id,)
+            ).fetchone()
+            video = connection.execute("SELECT status FROM videos WHERE id=?", (video_id,)).fetchone()
+        self.assertEqual((project["queue_paused"], project["queue_generation"]), (1, 1))
+        self.assertEqual(video["status"], "paused")
 
     def test_paused_project_cannot_be_claimed(self) -> None:
         _, video_id = self.add_project_and_video(paused=1)
@@ -903,6 +996,19 @@ class ReleaseContractTests(unittest.TestCase):
             markup.index('<script src="/static/app.js"></script>'),
         )
         self.assertIn('aria-describedby="updateSummary updateError"', markup)
+
+    def test_backend_permission_refreshes_when_background_work_becomes_idle(self) -> None:
+        script = (ROOT / "static/app.js").read_text(encoding="utf-8")
+        self.assertIn("backendBusy: null", script)
+        self.assertIn("wasBusy === true && !state.backendBusy", script)
+        self.assertIn("renderBackendStatus(await api('/api/hardware'))", script)
+
+    def test_release_workflow_signs_windows_application_and_installer(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertIn("WINDOWS_CERTIFICATE_PASSWORD", workflow)
+        self.assertIn('"dist\\Rothbald\\Rothbald.exe"', workflow)
+        self.assertGreaterEqual(workflow.count("signtool.FullName verify") + workflow.count("WINDOWS_SIGNTOOL verify"), 2)
+        self.assertIn("Remove-Item -LiteralPath $env:WINDOWS_CERTIFICATE_PATH -Force", workflow)
 
     def test_model_gate_does_not_force_viewport_scrollbars(self) -> None:
         stylesheet = (ROOT / "static/style.css").read_text(encoding="utf-8")

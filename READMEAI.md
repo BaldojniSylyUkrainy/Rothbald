@@ -1,6 +1,6 @@
 # READMEAI — project memory for Codex
 
-Last updated: 2026-07-28
+Last updated: 2026-07-29
 
 This file is the authoritative technical memory for the local video-search application. Read it completely before diagnosing or modifying the app. After every material change, update the affected sections and append a dated changelog entry.
 
@@ -63,7 +63,7 @@ The user chooses a folder through the platform-native macOS or Windows picker. `
 
 Video identity is stable inside a project and based on `project_id + relative_path`, not the absolute SSD path. The historical global `UNIQUE(source_path)` is rebuilt away during migration, so the same physical media may safely appear in two different projects. Size and mtime select files that need verification; a quick size + first/last-megabyte fingerprint prevents an mtime-only change from forcing transcription and protects `Locate` from attaching an unrelated folder. `ffprobe` has a 45-second timeout and always runs outside SQLite write transactions. Rescanning queues only genuinely new or changed media.
 
-Scanning first marks the project's media unavailable and then marks every rediscovered relative path available. It must never delete a video row, transcript, or semantic index merely because a file or drive is absent. This is required for removable SSDs and `Locate`.
+Scanning stages the complete filesystem result before changing SQLite, then atomically marks missing media unavailable and upserts every rediscovered relative path in one transaction. A traversal, stat, or fingerprint failure therefore preserves the last known-good availability state. It must never delete a video row, transcript, or semantic index merely because a file or drive is absent. Duration probing is not part of the scan transaction or application startup: a dedicated single background queue runs `ffprobe`, records the attempt time, and retries failed or zero results no more than once per day. This is required for removable storage and `Locate`.
 
 ### Transcription
 
@@ -78,6 +78,7 @@ Scanning first marks the project's media unavailable and then marks every redisc
 - On Windows, Auto resolves in strict order: CTranslate2-visible NVIDIA CUDA, first non-NVIDIA Vulkan GPU, CPU. NVIDIA is deliberately not offered through Vulkan. A failed Vulkan invocation is retried once through whisper.cpp CPU mode for the same 30-minute part.
 - Progress is parsed from Whisper/tqdm stderr and saved in SQLite.
 - `ffmpeg` and Whisper run in their own process groups. Pause/Abort first terminate the complete group and force-kill it after five seconds if necessary, preventing orphan decoders.
+- Normal application exit and updater-triggered exit use the same managed shutdown path: unfinished queues are persisted as paused with a new generation, active process groups are terminated, queued work is drained, and worker threads receive a bounded join before the desktop process exits.
 - If a managed subprocess produces no stderr activity for 20 minutes, the watchdog terminates it and marks the video as errored instead of hanging forever.
 - UI marks a processing item as potentially stalled after 10 minutes without a progress update.
 - On application restart, every project containing `processing` or `queued` transcription items is atomically moved to the paused state, its queue generation is advanced, and its unfinished videos become `paused`. Whisper must never auto-resume at launch or merely because the project was opened; the user must press `Продовжити`.
@@ -210,7 +211,7 @@ Rolling SQLite backups live in `data/backups/`. Startup creates at most one per 
 
 The queue worker catches unexpected job-level failures so a secondary database/logging error cannot terminate the only worker thread and silently freeze the remaining queue.
 
-Queue items are three-tuples `(action, video_id, queue_generation)`. Never enqueue a two-tuple or bypass the generation check for transcription jobs. Semantic-only jobs carry the generation for a consistent queue shape but are governed by their semantic/status checks.
+Queue items are three-tuples `(action, video_id, queue_generation)`. Never enqueue a two-tuple or bypass the generation check for transcription jobs. Semantic-only jobs carry the generation for a consistent queue shape but are governed by their semantic/status checks. Slow `ffprobe` work belongs exclusively to the separate single-consumer `duration_jobs` queue so a sleeping drive cannot block transcription or semantic indexing.
 
 ## HTTP endpoints
 
@@ -257,7 +258,7 @@ The desktop launcher binds the local HTTP socket synchronously before it creates
 - `setup.ps1` performs the corresponding Windows dependency checks and installs the platform-marked requirements.
 - Packaged Windows builds must run `scripts/build_whisper_cpp_windows.ps1` before PyInstaller. It prepares a pinned SHA-256-verified Vulkan SDK when no system SDK is available, downloads and verifies the pinned whisper.cpp source archive, builds static `whisper-cli.exe` with Vulkan plus `rothbald-vulkan-probe.exe`, and places both under ignored `build/windows-tools/` for bundling.
 - `.github/workflows/build.yml` tests and packages on native `macos-15` ARM64 and `windows-latest` runners for `main`, pull requests, and explicit manual dispatches. Pushing a release tag must not start a duplicate native build; the manually dispatched release workflow is the only post-tag build. Pull requests verify full packaging without uploading the large bundles; main/manual CI artifacts are retained for one day.
-- `.github/workflows/release.yml` is manual-only and uses the `release` environment. Its free Ubuntu preflight accepts only an existing four-part tag that equals `VERSION`, points at the dispatched current `main` commit, validates `RELEASE_NOTES.md`, and requires every Apple/updater credential before native jobs start. It installs platform-specific runtime/build locks, signs/notarizes/staples the Apple Silicon DMG, restores the runner's original Keychain search list, verifies the Windows bundle, generates checksums plus a signed `latest.json`, and creates a draft release whose body is the same `RELEASE_NOTES.md`. The draft must be published manually before `/releases/latest` exposes it to installed applications.
+- `.github/workflows/release.yml` is manual-only and uses the `release` environment. Its free Ubuntu preflight accepts only an existing four-part tag that equals `VERSION`, points at the dispatched current `main` commit, validates `RELEASE_NOTES.md`, and requires every Apple, Windows Authenticode, and updater credential before native jobs start. It installs platform-specific runtime/build locks, Authenticode-signs and verifies the Windows executable and Inno Setup installer, signs/notarizes/staples the Apple Silicon DMG, restores the runner's original Keychain search list, generates checksums plus a signed `latest.json`, and creates a draft release whose body is the same `RELEASE_NOTES.md`. The draft must be published manually before `/releases/latest` exposes it to installed applications.
 - Build version metadata is generated from `VERSION` before PyInstaller. The packaged UI reads `/api/app`; never hardcode a displayed version in HTML or JavaScript.
 
 ## Verification checklist
@@ -302,9 +303,14 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 - Native CI bundles are prepared through PyInstaller and GitHub Actions; the manual release path additionally signs and notarizes Apple Silicon.
 - The bundle opens as a standalone PySide6/QtWebEngine desktop window, not as a browser tab. PyInstaller embeds the platform-specific Dock/executable icon.
 - Model updates are checked in-app against published Hugging Face revisions and downloaded with exact byte progress, speed, and ETA.
-- Draft GitHub Release hosting, embedded build identity, macOS Developer ID signing/notarization, signed application-update manifests, verified in-app downloads, and native installer handoff are implemented. Windows Authenticode still requires a separate certificate.
+- Draft GitHub Release hosting, embedded build identity, macOS Developer ID signing/notarization, Windows Authenticode signing, signed application-update manifests, verified in-app downloads, and native installer handoff are implemented. A protected release environment must provide the platform signing certificates.
 
 ## Changelog
+
+### 2026-07-29
+
+- Hardened MVP shutdown and media discovery: application/updater exit now pauses unfinished queues, advances queue generations, terminates all managed ffmpeg/Whisper process groups, drains pending jobs, and performs bounded worker joins. Folder scans stage filesystem metadata before one atomic database update, while duration probing moved out of startup and scans into a dedicated background queue with a 24-hour failure backoff. The footer backend selector now refreshes its server permission when the final transcription or indexing job becomes idle.
+- Added regression coverage for shutdown persistence/process termination, failed-scan rollback behavior, deferred duration probing/backoff, and backend-permission refresh. The manual Windows release path now requires a protected PFX, Authenticode-signs and verifies both `Rothbald.exe` and the Inno Setup installer, and removes temporary signing material on every outcome.
 
 ### 2026-07-28
 

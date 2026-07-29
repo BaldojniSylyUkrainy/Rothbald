@@ -154,6 +154,7 @@ def main() -> None:
     try:
         exit_code = qt_app.exec()
     finally:
+        server.shutdown_runtime()
         http_server.shutdown()
         http_server.server_close()
         server_thread.join(timeout=2)
