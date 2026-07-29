@@ -5,7 +5,7 @@ on:
     inputs:
       tag:
         description: "Existing green-main release tag, for example vX.Y.Z.0"
-        default: "v0.4.1.0"
+        default: "v0.4.2.0"
         required: true
         type: string
 
@@ -30,8 +30,6 @@ jobs:
       APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
       APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
       ROTHBALD_UPDATER_PRIVATE_KEY: ${{ secrets.ROTHBALD_UPDATER_PRIVATE_KEY }}
-      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -61,7 +59,7 @@ jobs:
             echo "Tag $REQUESTED_TAG points to $TAG_COMMIT, not dispatched main commit $GITHUB_SHA"
             exit 1
           }
-          for NAME in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_CONTENT APPLE_SIGNING_IDENTITY ROTHBALD_UPDATER_PRIVATE_KEY WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD; do
+          for NAME in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_CONTENT APPLE_SIGNING_IDENTITY ROTHBALD_UPDATER_PRIVATE_KEY; do
             [[ -n "${!NAME:-}" ]] || {
               echo "$NAME is missing in the release environment"
               exit 1
@@ -78,8 +76,6 @@ jobs:
     env:
       REQUESTED_TAG: ${{ inputs.tag }}
       ROTHBALD_BUILD_CHANNEL: release
-      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -120,23 +116,6 @@ jobs:
         run: pyinstaller --noconfirm Rothbald.spec
       - name: Smoke-test packaged Windows application
         run: python scripts/smoke_packaged.py dist/Rothbald/Rothbald.exe
-      - name: Import signing certificate and sign application
-        shell: pwsh
-        run: |
-          $certificatePath = Join-Path $env:RUNNER_TEMP "rothbald-windows-signing.pfx"
-          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
-          if (!(Test-Path -LiteralPath $certificatePath) -or (Get-Item $certificatePath).Length -eq 0) {
-            throw "WINDOWS_CERTIFICATE did not produce a valid PFX file"
-          }
-          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
-            Sort-Object FullName -Descending | Select-Object -First 1
-          if (!$signtool) { throw "signtool.exe not found" }
-          "WINDOWS_CERTIFICATE_PATH=$certificatePath" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "WINDOWS_SIGNTOOL=$($signtool.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
-          & $signtool.FullName sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f $certificatePath /p $env:WINDOWS_CERTIFICATE_PASSWORD "dist\Rothbald\Rothbald.exe"
-          if ($LASTEXITCODE -ne 0) { throw "Rothbald.exe signing failed" }
-          & $signtool.FullName verify /pa /v "dist\Rothbald\Rothbald.exe"
-          if ($LASTEXITCODE -ne 0) { throw "Rothbald.exe signature verification failed" }
       - name: Build and verify Windows installer
         shell: pwsh
         run: |
@@ -157,24 +136,12 @@ jobs:
           if (!(Test-Path -LiteralPath $installer) -or (Get-Item $installer).Length -eq 0) {
             throw "Windows installer is missing or empty"
           }
-          & $env:WINDOWS_SIGNTOOL sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f $env:WINDOWS_CERTIFICATE_PATH /p $env:WINDOWS_CERTIFICATE_PASSWORD $installer
-          if ($LASTEXITCODE -ne 0) { throw "Windows installer signing failed" }
-          & $env:WINDOWS_SIGNTOOL verify /pa /v $installer
-          if ($LASTEXITCODE -ne 0) { throw "Windows installer signature verification failed" }
       - uses: actions/upload-artifact@v6
         with:
           name: release-windows
           path: release-assets/
           if-no-files-found: error
           retention-days: 1
-      - name: Remove Windows signing material
-        if: always()
-        shell: pwsh
-        run: |
-          if ($env:WINDOWS_CERTIFICATE_PATH -and (Test-Path -LiteralPath $env:WINDOWS_CERTIFICATE_PATH)) {
-            Remove-Item -LiteralPath $env:WINDOWS_CERTIFICATE_PATH -Force
-          }
-
   macos:
     name: macOS Apple Silicon
     needs: preflight

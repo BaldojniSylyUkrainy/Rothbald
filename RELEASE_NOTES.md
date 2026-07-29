@@ -1,4 +1,8 @@
-# Rothbald 0.4.1.0
+# Rothbald 0.4.2.0
+
+## Windows release
+
+- Windows installer тепер збирається без Authenticode, як у фактичному release-процесі `yt-dlp-BD`, тому для релізу не потрібен відсутній Windows code-signing certificate. Перевірка файлів і криптографічний підпис manifest автооновлення збережені; Windows SmartScreen може показати стандартне попередження невідомого видавця.
 
 ## Перевірка збірки
 
@@ -18,5 +22,5 @@
 
 ## Релізний процес
 
-- Версія `0.4.1.0` надходить у footer, macOS bundle, Windows executable, installer та updater з єдиного файла `VERSION`.
+- Версія `0.4.2.0` надходить у footer, macOS bundle, Windows executable, installer та updater з єдиного файла `VERSION`.
 - Додано команду, яка за правилами Rothbald готує наступну fix або feature версію та синхронізує стандартний tag у ручному release workflow.

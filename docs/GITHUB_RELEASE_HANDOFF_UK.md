@@ -4,7 +4,7 @@ Rothbald повторює безпечний релізний принцип `yt
 а публічний реліз запускається лише вручну через `.github/workflows/release.yml`.
 Workflow:
 
-- перевіряє, збирає та Authenticode-підписує Windows x64 застосунок і `setup.exe`;
+- перевіряє та збирає Windows x64 застосунок і `setup.exe` без Authenticode;
 - перевіряє, підписує Developer ID, нотаризує й stapling-перевіряє macOS Apple Silicon;
 - формує підписаний `latest.json` і `SHA256SUMS.txt`;
 - бере один текст із обов’язкового `RELEASE_NOTES.md` для manifest та GitHub Release;
@@ -84,8 +84,6 @@ GitHub не дозволяє прочитати назад значення secr
 | Secret | `APPLE_API_KEY` | App Store Connect Key ID |
 | Secret | `APPLE_API_KEY_CONTENT` | повний `AuthKey_….p8` |
 | Secret | `ROTHBALD_UPDATER_PRIVATE_KEY` | base64 Ed25519 private key із `.secrets/rothbald-updater-private.key` |
-| Secret | `WINDOWS_CERTIFICATE` | Windows code-signing `.pfx` у base64 |
-| Secret | `WINDOWS_CERTIFICATE_PASSWORD` | пароль Windows `.pfx` |
 | Variable | `APPLE_SIGNING_IDENTITY` | `Developer ID Application: Volodymyr Bortiuk (3KFYRV3QRP)` |
 
 Apple secrets можна зберегти на repository або environment рівні. Не дублюйте
@@ -135,24 +133,14 @@ Developer ID signature/hardened runtime/timestamp, Apple notarization не ма�
 За можливості встановіть `.dmg` і Windows installer на чистих машинах, після чого
 натисніть **Publish release**. До цього draft не змінює `/releases/latest`.
 
-## Windows Authenticode і SmartScreen
+## Windows і SmartScreen
 
-Ed25519 signature updater manifest не є Windows Authenticode, тому release
-додатково вимагає окремий Windows code-signing certificate. Workflow декодує
-`WINDOWS_CERTIFICATE` лише у тимчасовий файл runner-а, підписує та перевіряє
-`Rothbald.exe`, пакує його в Inno Setup, після чого підписує й перевіряє сам
-installer. Тимчасовий `.pfx` видаляється навіть після невдалого job.
+Windows-збірка повторює фактичний credential-підхід `yt-dlp-BD`: окремого
+довіреного Authenticode-сертифіката немає, тому `Rothbald.exe` та Inno Setup
+installer не підписуються. SmartScreen може показати `Unknown publisher` або
+стандартне попередження для нового завантаження.
 
-Додайте PFX без виведення його в Terminal, наприклад на macOS:
-
-```bash
-base64 -i /absolute/path/to/windows-code-signing.pfx |
-  gh secret set WINDOWS_CERTIFICATE --env release \
-    --repo BaldojniSylyUkrainy/Rothbald
-gh secret set WINDOWS_CERTIFICATE_PASSWORD --env release \
-  --repo BaldojniSylyUkrainy/Rothbald
-```
-
-SmartScreen reputation накопичується окремо від валідності підпису. Новий
-сертифікат може спочатку все одно показувати попередження, але publisher уже не
-буде `Unknown` за умови довіреного code-signing certificate.
+Це не вимикає захист автооновлення: `latest.json` підписується окремим Ed25519
+ключем, застосунок перевіряє цей підпис і SHA-256 інсталятора до запуску. Якщо
+згодом з’явиться довірений Windows code-signing certificate, Authenticode можна
+повернути окремою зміною workflow та задокументованих secrets.

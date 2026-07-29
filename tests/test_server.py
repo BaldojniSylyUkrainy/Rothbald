@@ -1099,12 +1099,12 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("Автовизначення", script)
         self.assertIn("data-picker-kind=\"language\"", markup)
 
-    def test_release_workflow_signs_windows_application_and_installer(self) -> None:
+    def test_release_workflow_keeps_windows_unsigned_without_weakening_updater_manifest(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-        self.assertIn("WINDOWS_CERTIFICATE_PASSWORD", workflow)
-        self.assertIn('"dist\\Rothbald\\Rothbald.exe"', workflow)
-        self.assertGreaterEqual(workflow.count("signtool.FullName verify") + workflow.count("WINDOWS_SIGNTOOL verify"), 2)
-        self.assertIn("Remove-Item -LiteralPath $env:WINDOWS_CERTIFICATE_PATH -Force", workflow)
+        self.assertNotIn("WINDOWS_CERTIFICATE", workflow)
+        self.assertNotIn("signtool", workflow.lower())
+        self.assertIn('ROTHBALD_UPDATER_PRIVATE_KEY: ${{ secrets.ROTHBALD_UPDATER_PRIVATE_KEY }}', workflow)
+        self.assertIn("python scripts/generate_release_manifest.py", workflow)
 
     def test_model_gate_does_not_force_viewport_scrollbars(self) -> None:
         stylesheet = (ROOT / "static/style.css").read_text(encoding="utf-8")
