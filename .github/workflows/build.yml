@@ -30,8 +30,8 @@ jobs:
             artifact_path: release-assets/Rothbald-*-Windows-Setup.exe
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
           cache: pip
@@ -45,17 +45,21 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install ffmpeg innosetup --no-progress -y
       - name: Install Python dependencies
-        run: python -m pip install -r ${{ matrix.lockfile }} -r ${{ matrix.build_lockfile }}
+        run: python -m pip install --require-hashes -r ${{ matrix.lockfile }} -r ${{ matrix.build_lockfile }}
+      - name: Install pinned JavaScript build tools
+        run: npm ci
       - name: Build Windows Vulkan transcription backend
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/build_whisper_cpp_windows.ps1
+        run: |
+          ./scripts/prepare_ffmpeg_windows.ps1
+          ./scripts/build_whisper_cpp_windows.ps1
       - name: Verify source and tests
         shell: bash
         run: |
           python scripts/prepare_build.py
-          npx --yes --package=@ast-grep/cli@0.43.0 ast-grep scan .
-          npx --yes --package=@ast-grep/cli@0.43.0 ast-grep test
+          npm run scan
+          npm run scan:test
           python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/smoke_packaged.py scripts/validate_release_notes.py scripts/versioning.py
           node --check static/app.js
           node --check static/update_flow.js
@@ -90,7 +94,7 @@ jobs:
           }
           & $iscc "/DMyAppVersion=$version" "installer\Rothbald.iss"
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: github.event_name != 'pull_request'
         with:
           name: ${{ matrix.artifact }}

@@ -19,6 +19,7 @@ datas = [
     ("assets/app-icon.png", "assets"),
     ("VERSION", "."),
     (str(build_info), "."),
+    ("THIRD_PARTY_NOTICES.md", "licenses"),
 ]
 binaries = []
 hiddenimports = []
@@ -43,14 +44,30 @@ hiddenimports += [
     "PySide6.QtCore",
     "PySide6.QtGui",
     "PySide6.QtWidgets",
+    "PySide6.QtNetwork",
     "PySide6.QtWebEngineCore",
     "PySide6.QtWebEngineWidgets",
 ]
 
 for executable in ("ffmpeg", "ffprobe"):
-    path = shutil.which(executable)
-    if path:
-        binaries.append((path, "."))
+    if sys.platform == "win32":
+        path = Path("build/windows-tools") / f"{executable}.exe"
+    else:
+        resolved = shutil.which(executable)
+        path = Path(resolved).resolve() if resolved else Path()
+    if not path.is_file():
+        raise SystemExit(f"Real {executable} binary is missing; prepare runtime tools before PyInstaller")
+    binaries.append((str(path), "."))
+
+if sys.platform == "darwin":
+    ffmpeg_prefix = Path(shutil.which("ffmpeg")).resolve().parent.parent
+    ffmpeg_licenses = [
+        path for pattern in ("LICENSE*", "COPYING*")
+        for path in ffmpeg_prefix.glob(pattern) if path.is_file()
+    ]
+    if not ffmpeg_licenses:
+        raise SystemExit("FFmpeg license files are missing from the Homebrew package")
+    datas += [(str(path), "licenses/ffmpeg") for path in ffmpeg_licenses]
 
 if sys.platform == "win32":
     for executable in ("whisper-cli.exe", "rothbald-vulkan-probe.exe"):
@@ -64,6 +81,10 @@ if sys.platform == "win32":
     if not whisper_license.is_file():
         raise SystemExit(f"{whisper_license} is missing from the prepared Vulkan backend")
     datas.append((str(whisper_license), "licenses"))
+    ffmpeg_license = Path("build/windows-tools/FFmpeg-LICENSE.txt")
+    if not ffmpeg_license.is_file():
+        raise SystemExit(f"{ffmpeg_license} is missing from the prepared FFmpeg runtime")
+    datas.append((str(ffmpeg_license), "licenses"))
 
 a = Analysis(
     ["rothbald.py"],

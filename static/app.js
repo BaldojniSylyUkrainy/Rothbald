@@ -2,10 +2,11 @@ const state = {
   projects: [], project: '', videos: [], selected: null, pollTimer: null,
   searchResults: [], resultTab: 'semantic', selectedResult: null, visibleResults: 100,
   projectSequence: 0, videoSequence: 0, searchSequence: 0,
-  searchControllers: [], searchLoading: { exact: false, semantic: false },
+  searchControllers: [], searchLoading: { exact: false, semantic: false }, resultObserver: null,
   appInfo: null, appReady: false, updateStarted: false, updateManual: false, updateTimer: null,
   updatePollInFlight: false, updateActionPending: false, updateSnapshot: null, updateReturnFocus: null,
   updateDismissed: false,
+  projectGuideReturnFocus: null,
   backendBusy: null,
 };
 
@@ -87,7 +88,6 @@ async function loadAppInfo() {
     state.appInfo = info;
     $('#appVersion').textContent = `v${info.version}`;
     $('#appVersion').title = info.commit ? `Build ${info.commit.slice(0, 12)}` : '';
-    if (info.channel === 'release') $('#checkUpdates').classList.remove('hidden');
     maybeStartUpdateCheck();
     return info;
   } catch {
@@ -155,7 +155,8 @@ function updateModalIsOpen() {
   return !$('#updateModal').classList.contains('hidden');
 }
 
-function setBackgroundInert(inert) {
+function syncBackgroundInert() {
+  const inert = !$('#updateModal').classList.contains('hidden') || !$('#newProjectModal').classList.contains('hidden');
   $('main').toggleAttribute('inert', inert);
   $('.app-footer').toggleAttribute('inert', inert);
 }
@@ -166,7 +167,7 @@ function openUpdateModal() {
   state.updateDismissed = false;
   state.updateReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   modal.classList.remove('hidden');
-  setBackgroundInert(true);
+  syncBackgroundInert();
   $('#closeUpdateModal').focus();
 }
 
@@ -176,7 +177,7 @@ function closeUpdateModal({ snooze = false, user = true } = {}) {
   if (snooze && status?.status === 'available') snoozeUpdate(status.version);
   state.updateManual = false;
   $('#updateModal').classList.add('hidden');
-  setBackgroundInert(false);
+  syncBackgroundInert();
   if (status?.status === 'downloading') toast('Оновлення продовжує завантажуватися у фоні.');
   const target = state.updateReturnFocus;
   state.updateReturnFocus = null;
@@ -186,6 +187,7 @@ function closeUpdateModal({ snooze = false, user = true } = {}) {
 function renderUpdateShortcut(status) {
   const button = $('#checkUpdates');
   button.textContent = updateFlow.shortcutLabel(status.status, status.percent);
+  button.classList.toggle('hidden', !['downloading', 'downloaded', 'error'].includes(status.status));
   button.classList.toggle('update-attention', ['downloaded', 'error'].includes(status.status));
 }
 
@@ -653,6 +655,8 @@ function cancelSearch() {
   state.searchControllers.forEach(controller => controller.abort());
   state.searchControllers = [];
   state.searchLoading = { exact: false, semantic: false };
+  state.resultObserver?.disconnect();
+  state.resultObserver = null;
 }
 
 function showProjectHome() {
@@ -934,11 +938,32 @@ async function chooseFolder() {
   } catch (error) { toast(error.message); }
 }
 
+function openNewProjectGuide() {
+  if (!$('#newProjectModal').classList.contains('hidden')) return;
+  state.projectGuideReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  $('#newProjectModal').classList.remove('hidden');
+  syncBackgroundInert();
+  $('#startNewProject').focus();
+}
+
+function closeNewProjectGuide({ restoreFocus = true } = {}) {
+  $('#newProjectModal').classList.add('hidden');
+  syncBackgroundInert();
+  const target = state.projectGuideReturnFocus;
+  state.projectGuideReturnFocus = null;
+  if (restoreFocus && target?.isConnected && !target.disabled) target.focus();
+}
+
+async function startNewProject() {
+  closeNewProjectGuide({ restoreFocus: false });
+  await chooseFolder();
+}
+
 async function rescan() {
   if (!state.project) return;
   try {
     const data = await api(`/api/projects/${state.project}/scan`, { method: 'POST' });
-    toast(`Папку оновлено. Знайдено відео: ${data.videos}`);
+    toast(`Зміни в папці перевірено. Знайдено відео: ${data.videos}`);
     await loadVideos();
   } catch (error) { toast(error.message); }
 }
@@ -1069,13 +1094,16 @@ function renderSearchResults() {
   if (rendered.length < visible.length) {
     results.insertAdjacentHTML('beforeend', `<div id="resultSentinel" class="result-sentinel">Прокрути нижче — завантажу ще ${Math.min(100, visible.length - rendered.length)} результатів…</div>`);
     const sentinel = $('#resultSentinel');
+    state.resultObserver?.disconnect();
     const observer = new IntersectionObserver(entries => {
       if (!entries[0].isIntersecting) return;
       observer.disconnect();
+      if (state.resultObserver === observer) state.resultObserver = null;
       state.visibleResults += 100;
       renderSearchResults();
     }, { rootMargin: '300px' });
     observer.observe(sentinel);
+    state.resultObserver = observer;
   }
 }
 
@@ -1101,7 +1129,9 @@ async function search() {
     const controller = new AbortController();
     state.searchControllers.push(controller);
     try {
-      const found = await api(`/api/search/${type}?${params}`, { signal: controller.signal });
+      const requestParams = new URLSearchParams(params);
+      requestParams.set('request', `${sequence}-${type}`);
+      const found = await api(`/api/search/${type}?${requestParams}`, { signal: controller.signal });
       if (sequence !== state.searchSequence || project !== state.project) return;
       state.searchResults = state.searchResults.filter(result => result.match_type !== type).concat(found);
       state.searchLoading[type] = false;
@@ -1116,13 +1146,37 @@ async function search() {
       state.searchLoading[type] = false;
       toast(error.message);
       renderSearchResults();
+    } finally {
+      state.searchControllers = state.searchControllers.filter(item => item !== controller);
     }
   };
   run('exact');
   run('semantic');
 }
 
-$('#chooseFolder').addEventListener('click', chooseFolder);
+$('#chooseFolder').addEventListener('click', openNewProjectGuide);
+$('#closeNewProjectModal').addEventListener('click', () => closeNewProjectGuide());
+$('#cancelNewProject').addEventListener('click', () => closeNewProjectGuide());
+$('#startNewProject').addEventListener('click', startNewProject);
+$('#newProjectModal').addEventListener('keydown', event => {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeNewProjectGuide();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  const controls = [...$('#newProjectModal').querySelectorAll('button:not(:disabled)')];
+  if (!controls.length) return;
+  const first = controls[0];
+  const last = controls[controls.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+});
 $('#rescan').addEventListener('click', rescan);
 $('#retranscribe').addEventListener('click', retranscribeProject);
 $('#deleteProject').addEventListener('click', () => deleteProject());

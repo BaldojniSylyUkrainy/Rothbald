@@ -23,7 +23,12 @@ import server
 import transcribe_video
 import update_manifest
 from hardware_check import HardwarePreflight
-from model_manager import ModelManager, WINDOWS_VULKAN_WHISPER_REPO, whisper_spec_for_device
+from model_manager import (
+    ModelManager,
+    WINDOWS_VULKAN_WHISPER_REPO,
+    resolve_model_snapshot,
+    whisper_spec_for_device,
+)
 from release_notes import validate_release_notes
 from scripts import generate_release_manifest
 from scripts import smoke_packaged
@@ -43,7 +48,7 @@ def locked_versions(path: Path) -> dict[str, str]:
         if not line or line.startswith("#") or "==" not in line:
             continue
         name, version = line.split("==", 1)
-        result[name.lower().replace("_", "-")] = version
+        result[name.lower().replace("_", "-")] = version.rstrip(" \\")
     return result
 
 
@@ -84,6 +89,30 @@ class FakeResponse:
 
 
 class ApplicationInfoTests(unittest.TestCase):
+    def test_close_confirmation_lists_active_work(self) -> None:
+        title, prompt, details = rothbald.close_confirmation_text({
+            "active": True,
+            "model_status": "downloading",
+            "models": [{"name": "Whisper", "status": "downloading", "percent": 42}],
+            "update_status": "downloading",
+            "update_percent": 17,
+            "processing": 1,
+            "queued": 3,
+            "indexing": 2,
+            "media_checks": 0,
+        })
+        self.assertEqual(title, "Закрити Rothbald?")
+        self.assertIn("ще тривають", prompt)
+        self.assertIn("Whisper — 42%", details)
+        self.assertIn("Завантаження оновлення — 17%", details)
+        self.assertIn("Відео в черзі: 3", details)
+        self.assertIn("Індексація для пошуку: 2", details)
+
+    def test_close_confirmation_always_asks_when_idle(self) -> None:
+        _title, prompt, details = rothbald.close_confirmation_text({"active": False})
+        self.assertIn("Точно хочеш", prompt)
+        self.assertIn("активних процесів немає", details)
+
     def test_embedded_build_metadata_is_preferred(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -411,6 +440,11 @@ class TemporaryStorageTest(unittest.TestCase):
         server.BACKUP_DIR = server.DATA_DIR / "backups"
         server.DB_PATH = server.DATA_DIR / "test.sqlite3"
         server.DATA_DIR.mkdir(parents=True)
+        with server.duration_pending_lock:
+            server.duration_pending.clear()
+        while not server.duration_jobs.empty():
+            server.duration_jobs.get_nowait()
+            server.duration_jobs.task_done()
 
     def tearDown(self) -> None:
         server.DATA_DIR, server.TRANSCRIPT_DIR, server.BACKUP_DIR, server.DB_PATH = self.originals
@@ -703,8 +737,13 @@ class QueueTests(TemporaryStorageTest):
         _, video_id = self.add_project_and_video(paused=0)
         source = self.root / "one.mp4"
         source.write_bytes(b"0123456789")
+        source_stat = source.stat()
         with server.db() as connection:
-            connection.execute("UPDATE videos SET media_duration=3700 WHERE id=?", (video_id,))
+            connection.execute(
+                """UPDATE videos SET media_duration=3700,size=?,mtime=?,content_fingerprint=?
+                   WHERE id=?""",
+                (source_stat.st_size, source_stat.st_mtime, server.file_fingerprint(source), video_id),
+            )
             row = connection.execute("SELECT * FROM videos WHERE id=?", (video_id,)).fetchone()
             signature = server.transcription_signature(row)
             connection.execute(
@@ -728,6 +767,7 @@ class QueueTests(TemporaryStorageTest):
                     on_line("100%|")
 
         with mock.patch.object(server, "run_managed_process", side_effect=fake_process), \
+             mock.patch.object(server, "resolve_model_snapshot", return_value=Path("/models/exact")), \
              mock.patch.object(server, "index_semantics"):
             server.transcribe(video_id, 0)
 
@@ -743,6 +783,58 @@ class QueueTests(TemporaryStorageTest):
             self.assertEqual(connection.execute(
                 "SELECT COUNT(*) FROM transcription_parts WHERE video_id=?", (video_id,)
             ).fetchone()[0], 0)
+
+    def test_changed_source_is_rejected_before_transcript_commit(self) -> None:
+        _, video_id = self.add_project_and_video(paused=0)
+        source = self.root / "one.mp4"
+        source.write_bytes(b"0123456789")
+        stat = source.stat()
+        with server.db() as connection:
+            connection.execute(
+                "UPDATE videos SET size=?,mtime=?,content_fingerprint=? WHERE id=?",
+                (stat.st_size, stat.st_mtime, server.file_fingerprint(source), video_id),
+            )
+            row = connection.execute("SELECT * FROM videos WHERE id=?", (video_id,)).fetchone()
+        source.write_bytes(b"abcdefghij")
+        with self.assertRaisesRegex(RuntimeError, "замінене"):
+            server.assert_source_unchanged(source, row)
+
+    def test_failed_json_export_does_not_strand_semantic_indexing(self) -> None:
+        _, video_id = self.add_project_and_video(paused=0)
+        with server.db() as connection:
+            connection.execute("UPDATE videos SET status='processing' WHERE id=?", (video_id,))
+        with mock.patch.object(Path, "write_text", side_effect=OSError("disk full")):
+            revision = server.replace_video_transcript(
+                video_id, [{"start": 0, "end": 1, "text": "готовий текст"}]
+            )
+        self.assertEqual(revision, 1)
+        with server.db() as connection:
+            row = connection.execute(
+                "SELECT status,semantic_status FROM videos WHERE id=?", (video_id,)
+            ).fetchone()
+        self.assertEqual((row["status"], row["semantic_status"]), ("done", "pending"))
+
+    def test_duration_probe_queue_deduplicates_video(self) -> None:
+        self.assertTrue(server.enqueue_duration_probe("video"))
+        self.assertFalse(server.enqueue_duration_probe("video"))
+        self.assertEqual(server.duration_jobs.get_nowait(), "video")
+        server.duration_jobs.task_done()
+        with server.duration_pending_lock:
+            server.duration_pending.discard("video")
+
+    def test_delete_does_not_interrupt_project_when_backup_fails(self) -> None:
+        project_id, _video_id = self.add_project_and_video(paused=0)
+        handler = object()
+        with mock.patch.object(server, "backup_database", side_effect=OSError("disk full")), \
+             mock.patch.object(server, "interrupt_project_processes") as interrupt, \
+             mock.patch.object(server, "respond") as response:
+            server.Handler.delete_project(handler, project_id)
+        interrupt.assert_not_called()
+        self.assertEqual(response.call_args.args[2], 507)
+        with server.db() as connection:
+            self.assertTrue(connection.execute(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE id=?)", (project_id,)
+            ).fetchone()[0])
 
 
 class SearchAndUtilityTests(unittest.TestCase):
@@ -802,12 +894,13 @@ class SearchAndUtilityTests(unittest.TestCase):
         self.assertIsNone(server.parse_range_header("bytes=1-2,4-5", 100))
 
     def test_frozen_transcription_uses_the_packaged_executable(self) -> None:
-        with mock.patch.object(server.sys, "frozen", True, create=True):
+        with mock.patch.object(server.sys, "frozen", True, create=True), \
+             mock.patch.object(server, "resolve_model_snapshot", return_value=Path("/models/exact")):
             command = server.transcription_command(
                 Path("/tmp/input.wav"), Path("/tmp/output.json"), "auto"
             )
         self.assertEqual(command[:2], [server.sys.executable, "--transcribe"])
-        self.assertEqual(command[-2:], [server.transcription_model(), "auto"])
+        self.assertEqual(command[-2:], ["/models/exact", "auto"])
 
     def test_language_mode_changes_transcription_checkpoint_signature(self) -> None:
         row = {"size": 10, "mtime": 123.5}
@@ -871,6 +964,29 @@ class ModelBootstrapTests(unittest.TestCase):
             manager._download_file.assert_not_called()
             manifest = json.loads(manager.manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["models"]["speech"]["revision"], "remote-sha")
+
+    def test_runtime_resolves_exact_manifest_revision_without_main_ref(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "model-manifest.json").write_text(json.dumps({
+                "models": {"speech": {"repo": "owner/model", "revision": "exact-sha"}}
+            }), encoding="utf-8")
+            snapshot = root / "cache" / "snapshots" / "exact-sha"
+            spec = model_manager.ModelSpec("speech", "Speech", "owner/model", ("config.json",))
+            with mock.patch.object(model_manager, "model_specs", return_value=(spec,)), \
+                 mock.patch(
+                     "huggingface_hub.snapshot_download", return_value=str(snapshot)
+                 ) as download:
+                self.assertEqual(
+                    resolve_model_snapshot(root, "speech", "owner/model"),
+                    snapshot,
+                )
+            download.assert_called_once_with(
+                repo_id="owner/model",
+                revision="exact-sha",
+                allow_patterns=["config.json"],
+                local_files_only=True,
+            )
 
     def test_local_verification_requires_every_model_pattern(self) -> None:
         spec = model_manager.ModelSpec(
@@ -951,6 +1067,16 @@ class UpdaterTests(unittest.TestCase):
             manager.install()
             self.assertEqual(len(opened), 1)
             self.assertEqual(opened[0].read_bytes(), installer_payload)
+
+    def test_previous_installer_is_removed_on_next_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            updates = root / "updates"
+            updates.mkdir()
+            stale = updates / "old-installer.dmg"
+            stale.write_bytes(b"old")
+            UpdateManager(root, "0.4.2.0", enabled=False)
+            self.assertFalse(stale.exists())
 
     def test_download_failure_is_visible_and_retryable_without_rechecking_manifest(self) -> None:
         private_key, public_key = updater_key_pair()
@@ -1084,6 +1210,17 @@ class ReleaseContractTests(unittest.TestCase):
             markup.index('<script src="/static/app.js"></script>'),
         )
         self.assertIn('aria-describedby="updateSummary updateError"', markup)
+
+    def test_project_creation_and_search_copy_are_unambiguous(self) -> None:
+        markup = (ROOT / "static/index.html").read_text(encoding="utf-8")
+        script = (ROOT / "static/app.js").read_text(encoding="utf-8")
+        self.assertIn('id="newProjectModal"', markup)
+        self.assertIn('id="startNewProject"', markup)
+        self.assertIn("openNewProjectGuide", script)
+        self.assertIn("Перевірити зміни в папці", markup)
+        self.assertNotIn('id="searchInput" type="search" placeholder=', markup)
+        self.assertNotIn("Перевірити оновлення", markup)
+        self.assertNotIn("if (info.channel === 'release') $('#checkUpdates').classList.remove('hidden')", script)
 
     def test_backend_permission_refreshes_when_background_work_becomes_idle(self) -> None:
         script = (ROOT / "static/app.js").read_text(encoding="utf-8")

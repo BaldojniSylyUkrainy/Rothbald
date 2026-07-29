@@ -18,7 +18,7 @@ import time
 import unicodedata
 import urllib.parse
 import uuid
-from collections import Counter
+from collections import Counter, OrderedDict
 from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -29,7 +29,10 @@ from hardware_check import HardwarePreflight
 from model_manager import (
     EMBEDDING_PATTERNS,
     EMBEDDING_REPO,
+    configure_model_cache,
     get_model_manager,
+    model_revision,
+    resolve_model_snapshot,
     whisper_spec_for_device,
 )
 from process_utils import quiet_process_options
@@ -52,6 +55,9 @@ def default_data_dir() -> Path:
 
 
 DATA_DIR = Path(os.environ.get("ROTHBALD_DATA_DIR", os.environ.get("VIDEO_SEARCH_DATA_DIR", default_data_dir())))
+# Keep the multi-gigabyte model cache owned by Rothbald so it has one predictable
+# location and can be removed with the application's data.
+configure_model_cache(DATA_DIR)
 TRANSCRIPT_DIR = DATA_DIR / "transcripts"
 STATIC_DIR = ROOT / "static"
 DB_PATH = DATA_DIR / "video_search.sqlite3"
@@ -62,6 +68,7 @@ SEMANTIC_INDEX_VERSION = "natural-topic-v2"
 SEMANTIC_INDEX_ID = f"{EMBEDDING_MODEL}@{SEMANTIC_INDEX_VERSION}"
 EMBEDDING_DIMENSION = 1024
 SEMANTIC_SCORE_FLOOR = 0.70
+SEMANTIC_CACHE_MAX_BYTES = 256 * 1024 * 1024
 SEMANTIC_QUERY_INSTRUCTION = (
     "Given a search query in any language, retrieve transcript passages "
     "that express the same claim, idea, or topic"
@@ -77,7 +84,13 @@ BACKUP_KEEP = 5
 ALLOWED = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".mp3", ".m4a", ".wav", ".flac", ".ogg"}
 jobs: queue.Queue[tuple[str, str, int]] = queue.Queue()
 duration_jobs: queue.Queue[str] = queue.Queue()
+duration_pending: set[str] = set()
+duration_pending_lock = threading.Lock()
 embedding_lock = threading.RLock()
+semantic_cache_lock = threading.RLock()
+semantic_cache: OrderedDict[str, tuple[tuple[int, int, int], list[dict], object]] = OrderedDict()
+search_request_lock = threading.Lock()
+latest_semantic_request: dict[str, str] = {}
 process_lock = threading.RLock()
 active_processes: dict[str, subprocess.Popen] = {}
 interrupt_reasons: dict[str, str] = {}
@@ -102,9 +115,14 @@ runtime_started = False
 runtime_stopping = threading.Event()
 worker_thread: threading.Thread | None = None
 duration_worker_thread: threading.Thread | None = None
+model_ready_thread: threading.Thread | None = None
 
 
 class JobInterrupted(RuntimeError):
+    pass
+
+
+class SearchCancelled(RuntimeError):
     pass
 
 
@@ -224,6 +242,7 @@ def _rebuild_videos_table(connection: sqlite3.Connection) -> None:
 def init_storage() -> None:
     TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
     backup_database("startup")
+    semantic_index_id = current_semantic_index_id()
     with db() as connection:
         connection.executescript(
             """
@@ -273,6 +292,7 @@ def init_storage() -> None:
             CREATE INDEX IF NOT EXISTS idx_segments_video ON segments(video_id, start);
             CREATE INDEX IF NOT EXISTS idx_semantic_video ON semantic_chunks(video_id, start);
             CREATE INDEX IF NOT EXISTS idx_segment_terms_term ON segment_terms(term, segment_id);
+            CREATE INDEX IF NOT EXISTS idx_segment_terms_length ON segment_terms(length(term), term);
             CREATE INDEX IF NOT EXISTS idx_transcription_parts_video ON transcription_parts(video_id, signature);
             """
         )
@@ -357,7 +377,7 @@ def init_storage() -> None:
                     SELECT 1 FROM semantic_chunks c WHERE c.video_id=videos.id
                       AND c.model=? AND c.transcript_revision=videos.transcript_revision
                  )""",
-            (SEMANTIC_INDEX_ID,),
+            (semantic_index_id,),
         )
         connection.execute(
             """UPDATE videos SET semantic_status='pending',semantic_error=NULL,semantic_progress=0
@@ -367,7 +387,7 @@ def init_storage() -> None:
                     WHERE c.video_id=videos.id AND c.model=?
                       AND c.transcript_revision=videos.transcript_revision
                ))""",
-            (SEMANTIC_INDEX_ID,),
+            (semantic_index_id,),
         )
         connection.execute("UPDATE videos SET progress=1 WHERE status='done'")
         missing_terms = connection.execute(
@@ -457,7 +477,11 @@ def respond(handler: BaseHTTPRequestHandler, payload: object, status: int = 200)
     handler.send_header("X-Content-Type-Options", "nosniff")
     handler.send_header("Referrer-Policy", "no-referrer")
     handler.end_headers()
-    handler.wfile.write(body)
+    try:
+        handler.wfile.write(body)
+    except (BrokenPipeError, ConnectionResetError):
+        # A superseded search may be aborted by the UI while its worker finishes.
+        pass
 
 
 def trusted_local_host(raw_host: str, port: int = PORT) -> bool:
@@ -662,10 +686,16 @@ def probe_media_duration(video_id: str) -> None:
     """Probe one file outside SQLite locks and commit only if the row is unchanged."""
     with db() as connection:
         row = connection.execute(
-            "SELECT source_path,size,mtime,available,media_duration FROM videos WHERE id=?",
+            """SELECT source_path,size,mtime,available,media_duration,duration_checked_at
+               FROM videos WHERE id=?""",
             (video_id,),
         ).fetchone()
-    if not row or not row["available"] or row["media_duration"] > 0:
+    if (
+        not row
+        or not row["available"]
+        or row["media_duration"] > 0
+        or row["duration_checked_at"] >= time.time() - DURATION_RETRY_SECONDS
+    ):
         return
     source = Path(row["source_path"])
     duration = media_duration(source) if source.is_file() else 0.0
@@ -688,9 +718,24 @@ def enqueue_due_duration_probes() -> int:
                ORDER BY v.created_at,v.original_name""",
             (cutoff,),
         ).fetchall()
-    for row in rows:
-        duration_jobs.put(row["id"])
-    return len(rows)
+    queued = 0
+    with duration_pending_lock:
+        for row in rows:
+            if row["id"] in duration_pending:
+                continue
+            duration_pending.add(row["id"])
+            duration_jobs.put(row["id"])
+            queued += 1
+    return queued
+
+
+def enqueue_duration_probe(video_id: str) -> bool:
+    with duration_pending_lock:
+        if video_id in duration_pending:
+            return False
+        duration_pending.add(video_id)
+    duration_jobs.put(video_id)
+    return True
 
 
 def file_fingerprint(path: Path) -> str:
@@ -762,7 +807,13 @@ def verify_project_files(project_id: str) -> dict:
         for row in rows:
             relative = row["relative_path"] or row["original_name"]
             source = (folder / relative).resolve()
-            available = source.is_file() and source.stat().st_size == row["size"]
+            available = False
+            try:
+                if source.is_file() and source.stat().st_size == row["size"]:
+                    expected = row["content_fingerprint"]
+                    available = not expected or file_fingerprint(source) == expected
+            except OSError:
+                available = False
             found += int(available)
             connection.execute(
                 "UPDATE videos SET source_path=?, available=? WHERE id=?",
@@ -824,8 +875,9 @@ class LocalEmbedder:
         # Keep Metal exclusively for Whisper. Running Torch MPS and MLX together
         # on an M1 with unified memory can stall long transcriptions.
         self.device = "cpu"
-        self.tokenizer = AutoTokenizer.from_pretrained(EMBEDDING_MODEL, local_files_only=True)
-        self.model = AutoModel.from_pretrained(EMBEDDING_MODEL, local_files_only=True).to(self.device)
+        snapshot = resolve_model_snapshot(DATA_DIR, "meaning", EMBEDDING_MODEL)
+        self.tokenizer = AutoTokenizer.from_pretrained(snapshot, local_files_only=True)
+        self.model = AutoModel.from_pretrained(snapshot, local_files_only=True).to(self.device)
         self.model.eval()
 
     def encode(self, texts: list[str], kind: str) -> "object":
@@ -977,6 +1029,7 @@ def useful_semantic_text(text: str) -> bool:
 
 def index_semantics(video_id: str, items: list[dict] | None = None) -> None:
     try:
+        semantic_index_id = current_semantic_index_id()
         with db() as connection:
             video = connection.execute(
                 "SELECT transcript_revision FROM videos WHERE id=?", (video_id,)
@@ -1024,7 +1077,7 @@ def index_semantics(video_id: str, items: list[dict] | None = None) -> None:
                        video_id,start,end,text,embedding,model,transcript_revision
                    ) VALUES (?,?,?,?,?,?,?)""",
                 [
-                    (video_id, chunk["start"], chunk["end"], chunk["text"], vectors[i].tobytes(), SEMANTIC_INDEX_ID, revision)
+                    (video_id, chunk["start"], chunk["end"], chunk["text"], vectors[i].tobytes(), semantic_index_id, revision)
                     for i, chunk in enumerate(chunks)
                 ],
             )
@@ -1042,31 +1095,73 @@ def index_semantics(video_id: str, items: list[dict] | None = None) -> None:
             )
 
 
-def semantic_search(raw: str, project_id: str) -> list[dict]:
+def semantic_search(raw: str, project_id: str, is_current=None) -> list[dict]:
     import numpy as np
 
+    semantic_index_id = current_semantic_index_id()
     with db() as connection:
-        rows = connection.execute(
-            """SELECT c.video_id,c.start,c.end,c.text,c.embedding,v.original_name,v.available
+        token_row = connection.execute(
+            """SELECT COUNT(*),COALESCE(MAX(c.id),0),COALESCE(SUM(c.transcript_revision),0)
                FROM semantic_chunks c JOIN videos v ON v.id=c.video_id
                WHERE c.model=? AND c.transcript_revision=v.transcript_revision
                  AND v.semantic_revision=v.transcript_revision
                  AND v.semantic_status='ready' AND (?='' OR v.project_id=?)""",
-            (SEMANTIC_INDEX_ID, project_id, project_id),
-        ).fetchall()
-    rows = [row for row in rows if useful_semantic_text(row["text"])]
+            (semantic_index_id, project_id, project_id),
+        ).fetchone()
+        token = tuple(int(value) for value in token_row)
+    with semantic_cache_lock:
+        cached = semantic_cache.get(project_id)
+        if cached and cached[0] == token:
+            semantic_cache.move_to_end(project_id)
+            rows, matrix = cached[1], cached[2]
+        else:
+            rows = []
+            matrix = None
+    if matrix is None:
+        with db() as connection:
+            fetched = connection.execute(
+                """SELECT c.video_id,c.start,c.end,c.text,c.embedding,v.original_name,v.available
+               FROM semantic_chunks c JOIN videos v ON v.id=c.video_id
+               WHERE c.model=? AND c.transcript_revision=v.transcript_revision
+                 AND v.semantic_revision=v.transcript_revision
+                 AND v.semantic_status='ready' AND (?='' OR v.project_id=?)""",
+                (semantic_index_id, project_id, project_id),
+            ).fetchall()
+        fetched = [
+            row for row in fetched
+            if useful_semantic_text(row["text"])
+            and len(row["embedding"]) == EMBEDDING_DIMENSION * np.dtype(np.float32).itemsize
+        ]
+        rows = [
+            {
+                "video_id": row["video_id"], "start": row["start"], "end": row["end"],
+                "text": row["text"], "original_name": row["original_name"],
+                "available": row["available"],
+            }
+            for row in fetched
+        ]
+        matrix = (
+            np.stack([np.frombuffer(row["embedding"], dtype=np.float32) for row in fetched])
+            if fetched else np.empty((0, EMBEDDING_DIMENSION), dtype=np.float32)
+        )
+        with semantic_cache_lock:
+            if matrix.nbytes <= SEMANTIC_CACHE_MAX_BYTES:
+                semantic_cache[project_id] = (token, rows, matrix)
+                semantic_cache.move_to_end(project_id)
+                while (
+                    len(semantic_cache) > 3
+                    or sum(item[2].nbytes for item in semantic_cache.values())
+                    > SEMANTIC_CACHE_MAX_BYTES
+                ):
+                    semantic_cache.popitem(last=False)
     if not rows:
         return []
     with embedding_lock:
+        if is_current is not None and not is_current():
+            raise SearchCancelled("superseded")
         query = embedder().encode([raw], "query")[0]
-    compatible = [
-        row for row in rows
-        if len(row["embedding"]) == EMBEDDING_DIMENSION * np.dtype(np.float32).itemsize
-    ]
-    if not compatible:
-        return []
-    rows = compatible
-    matrix = np.stack([np.frombuffer(row["embedding"], dtype=np.float32) for row in rows])
+    if is_current is not None and not is_current():
+        raise SearchCancelled("superseded")
     scores = matrix @ query
     best = np.argsort(scores)[::-1]
     return [
@@ -1090,17 +1185,20 @@ def exact_search(raw: str, project_id: str) -> list[dict]:
     if not words:
         return []
     with db() as connection:
-        vocabulary = [
-            row[0] for row in connection.execute(
-                """SELECT DISTINCT t.term FROM segment_terms t
-                   JOIN segments s ON s.id=t.segment_id
-                   JOIN videos v ON v.id=s.video_id
-                   WHERE (?='' OR v.project_id=?)""",
-                (project_id, project_id),
-            ).fetchall()
-        ]
         candidate_ids: set[int] | None = None
         for word in words:
+            # Russian inflection rules below can remove a long suffix. Keep a
+            # generous range while avoiding a project-wide Python vocabulary.
+            vocabulary = [
+                row[0] for row in connection.execute(
+                    """SELECT DISTINCT t.term FROM segment_terms t
+                       JOIN segments s ON s.id=t.segment_id
+                       JOIN videos v ON v.id=s.video_id
+                       WHERE length(t.term) BETWEEN ? AND ?
+                         AND (?='' OR v.project_id=?)""",
+                    (max(1, len(word) - 8), len(word) + 8, project_id, project_id),
+                ).fetchall()
+            ]
             matching_terms = [term for term in vocabulary if text_token_matches(word, term)]
             if not matching_terms:
                 return []
@@ -1245,16 +1343,21 @@ def scan_project(project_id: str) -> int:
         connection.execute("UPDATE projects SET scanned_at=? WHERE id=?", (now, project_id))
     generation = int(project["queue_generation"])
     for video_id in duration_queue:
-        duration_jobs.put(video_id)
+        enqueue_duration_probe(video_id)
     for video_id in to_queue:
         jobs.put(("transcribe", video_id, generation))
     return len(staged)
 
 
 def transcription_signature(row: sqlite3.Row, language_mode: str = "standard") -> str:
+    model_id = transcription_model()
+    try:
+        model_id = f"{model_id}@{model_revision(DATA_DIR, 'speech', model_id)}"
+    except RuntimeError:
+        pass
     value = (
         f"{row['size']}:{row['mtime']:.6f}:"
-        f"{transcription_model()}:{TRANSCRIPTION_PART_SECONDS}:{language_mode}"
+        f"{model_id}:{TRANSCRIPTION_PART_SECONDS}:{language_mode}"
     )
     return hashlib.sha256(value.encode()).hexdigest()
 
@@ -1263,10 +1366,18 @@ def transcription_model() -> str:
     return whisper_spec_for_device().repo_id
 
 
+def current_semantic_index_id() -> str:
+    try:
+        revision = model_revision(DATA_DIR, "meaning", EMBEDDING_MODEL)
+    except RuntimeError:
+        return SEMANTIC_INDEX_ID
+    return f"{EMBEDDING_MODEL}@{revision}@{SEMANTIC_INDEX_VERSION}"
+
+
 def transcription_command(
     input_path: Path, output_path: Path, language_mode: str = "standard"
 ) -> list[str]:
-    model = transcription_model()
+    model = str(resolve_model_snapshot(DATA_DIR, "speech", transcription_model()))
     if getattr(sys, "frozen", False):
         return [
             sys.executable, "--transcribe", str(input_path), str(output_path), model, language_mode,
@@ -1427,11 +1538,28 @@ def replace_video_transcript(video_id: str, items: list[dict]) -> int:
             (time.time(), revision, video_id),
         )
         connection.execute("DELETE FROM transcription_parts WHERE video_id=?", (video_id,))
-    output = TRANSCRIPT_DIR / f"{video_id}.json"
-    temporary = output.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps({"segments": cleaned}, ensure_ascii=False), encoding="utf-8")
-    os.replace(temporary, output)
+    # SQLite is authoritative. A failed convenience export must not strand the
+    # already committed semantic job in "pending".
+    try:
+        output = TRANSCRIPT_DIR / f"{video_id}.json"
+        temporary = output.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps({"segments": cleaned}, ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, output)
+    except OSError as exc:
+        print(f"Could not export transcript JSON for {video_id}: {exc}", file=sys.stderr)
     return revision
+
+
+def assert_source_unchanged(source: Path, row: sqlite3.Row) -> None:
+    try:
+        stat = source.stat()
+    except OSError as exc:
+        raise RuntimeError("Відео стало недоступним під час розпізнавання") from exc
+    expected = row["content_fingerprint"]
+    if expected and file_fingerprint(source) != expected:
+        raise RuntimeError("Відео було замінене під час розпізнавання. Перевір зміни в папці.")
+    if stat.st_size != row["size"] or abs(stat.st_mtime - row["mtime"]) > .001:
+        raise RuntimeError("Відео змінилося під час розпізнавання. Перевір зміни в папці.")
 
 
 def transcribe(video_id: str, generation: int) -> None:
@@ -1444,6 +1572,7 @@ def transcribe(video_id: str, generation: int) -> None:
     try:
         if not source.is_file():
             raise RuntimeError("Відео недоступне — перевір диск або розташування файлу")
+        assert_source_unchanged(source, row)
         duration = float(row["media_duration"])
         if duration <= 0:
             duration = media_duration(source)
@@ -1477,6 +1606,7 @@ def transcribe(video_id: str, generation: int) -> None:
                     continue
                 if not job_still_current(video_id, generation):
                     raise JobInterrupted("stale")
+                assert_source_unchanged(source, row)
                 audio = temporary_root / f"part-{index:04d}.wav"
                 result = temporary_root / f"part-{index:04d}.json"
                 if actual_end > actual_start:
@@ -1514,6 +1644,7 @@ def transcribe(video_id: str, generation: int) -> None:
                     transcription_command(transcription_source, result, language_mode),
                     consume_progress,
                 )
+                assert_source_unchanged(source, row)
                 payload = json.loads(result.read_text(encoding="utf-8"))
                 part_items = []
                 for item in payload.get("segments", []):
@@ -1531,6 +1662,7 @@ def transcribe(video_id: str, generation: int) -> None:
                         ((index + 1) / len(ranges), time.time(), video_id),
                     )
         combined = [item for index in range(len(ranges)) for item in saved.get(index, [])]
+        assert_source_unchanged(source, row)
         replace_video_transcript(video_id, combined)
         index_semantics(video_id, combined)
     except JobInterrupted:
@@ -1601,12 +1733,14 @@ def duration_worker() -> None:
         except Exception as exc:
             print(f"Duration probe failed for {video_id}: {exc}", file=sys.stderr)
         finally:
+            with duration_pending_lock:
+                duration_pending.discard(video_id)
             duration_jobs.task_done()
 
 
 def start_runtime() -> None:
     """Start model work only after the machine check has been accepted."""
-    global runtime_started, worker_thread, duration_worker_thread
+    global runtime_started, worker_thread, duration_worker_thread, model_ready_thread
     if not hardware_preflight.apply_saved_device():
         raise ValueError("Спочатку підтвердь перевірку сумісності комп’ютера")
     model_manager.start()
@@ -1621,13 +1755,19 @@ def start_runtime() -> None:
             target=duration_worker, daemon=True, name="rothbald-duration-worker"
         )
         duration_worker_thread.start()
+        model_ready_thread = threading.Thread(
+            target=reconcile_models_when_ready,
+            daemon=True,
+            name="rothbald-model-reconcile",
+        )
+        model_ready_thread.start()
         enqueue_due_duration_probes()
         resume_pending_semantic_indexing()
 
 
 def shutdown_runtime(timeout: float = 7.0) -> None:
     """Pause unfinished work and terminate every managed child before app exit."""
-    global runtime_started, worker_thread, duration_worker_thread
+    global runtime_started, worker_thread, duration_worker_thread, model_ready_thread
     runtime_stopping.set()
     try:
         if DB_PATH.is_file():
@@ -1688,13 +1828,16 @@ def shutdown_runtime(timeout: float = 7.0) -> None:
             break
         else:
             duration_jobs.task_done()
-    for thread in (worker_thread, duration_worker_thread):
+    with duration_pending_lock:
+        duration_pending.clear()
+    for thread in (worker_thread, duration_worker_thread, model_ready_thread):
         if thread and thread is not threading.current_thread():
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
     with runtime_lock:
         runtime_started = False
         worker_thread = None
         duration_worker_thread = None
+        model_ready_thread = None
 
 
 def resume_pending_semantic_indexing() -> None:
@@ -1707,6 +1850,30 @@ def resume_pending_semantic_indexing() -> None:
         ).fetchall()
     for row in semantic_rows:
         jobs.put(("semantic", row["id"], int(row["queue_generation"])))
+
+
+def reconcile_models_when_ready() -> None:
+    try:
+        model_manager.wait()
+        if runtime_stopping.is_set():
+            return
+        semantic_index_id = current_semantic_index_id()
+        with db() as connection:
+            connection.execute(
+                """UPDATE videos SET semantic_status='pending',semantic_error=NULL,semantic_progress=0
+                   WHERE EXISTS (SELECT 1 FROM segments s WHERE s.video_id=videos.id)
+                     AND NOT EXISTS (
+                       SELECT 1 FROM semantic_chunks c
+                       WHERE c.video_id=videos.id AND c.model=?
+                         AND c.transcript_revision=videos.transcript_revision
+                     )""",
+                (semantic_index_id,),
+            )
+        with semantic_cache_lock:
+            semantic_cache.clear()
+        resume_pending_semantic_indexing()
+    except Exception as exc:
+        print(f"Model reconciliation deferred: {exc}", file=sys.stderr)
 
 
 def parse_range_header(header: str | None, size: int) -> tuple[int, int] | None:
@@ -1751,6 +1918,68 @@ def backend_change_blocker() -> str | None:
     return None
 
 
+def runtime_has_active_work() -> bool:
+    return runtime_activity_summary()["active"]
+
+
+def runtime_activity_summary() -> dict:
+    """Return a small, thread-safe snapshot for native lifecycle UI."""
+    model_state = model_manager.snapshot()
+    update_state = update_manager.snapshot()
+    summary = {
+        "active": False,
+        "model_status": model_state.get("status", "idle"),
+        "models": [
+            {
+                "name": item.get("name") or item.get("key") or "Модель",
+                "status": item.get("status", "idle"),
+                "percent": int(item.get("percent") or 0),
+            }
+            for item in model_state.get("models", [])
+            if item.get("status") in {"checking", "downloading"}
+        ],
+        "update_status": update_state.get("status", "idle"),
+        "update_percent": int(update_state.get("percent") or 0),
+        "queued": 0,
+        "processing": 0,
+        "indexing": 0,
+        "media_checks": 0,
+    }
+    with duration_pending_lock:
+        summary["media_checks"] = len(duration_pending)
+    if DB_PATH.is_file():
+        connection = None
+        try:
+            # This is called from the GUI thread. Never make a close dialog wait
+            # behind a long-running database writer.
+            connection = sqlite3.connect(DB_PATH, timeout=0.25)
+            connection.row_factory = sqlite3.Row
+            counts = connection.execute(
+                """SELECT
+                       COALESCE(SUM(status='queued'),0) queued,
+                       COALESCE(SUM(status='processing'),0) processing,
+                       COALESCE(SUM(
+                           semantic_status IN ('pending','indexing')
+                           AND EXISTS (SELECT 1 FROM segments s WHERE s.video_id=videos.id)
+                       ),0) indexing
+                   FROM videos"""
+            ).fetchone()
+            summary.update({key: int(counts[key]) for key in ("queued", "processing", "indexing")})
+        except sqlite3.Error:
+            # A managed child may still be alive while the database is briefly busy.
+            with process_lock:
+                summary["processing"] = len(active_processes)
+        finally:
+            if connection is not None:
+                connection.close()
+    summary["active"] = bool(
+        summary["model_status"] in {"checking", "downloading"}
+        or summary["update_status"] in {"checking", "downloading"}
+        or any(summary[key] for key in ("queued", "processing", "indexing", "media_checks"))
+    )
+    return summary
+
+
 def hardware_api_report() -> dict:
     report = hardware_preflight.inspect()
     blocker = backend_change_blocker()
@@ -1787,7 +2016,11 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/search/exact":
             return self.search_exact(query.get("q", [""])[0], query.get("project", [""])[0])
         if parsed.path == "/api/search/semantic":
-            return self.search_semantic(query.get("q", [""])[0], query.get("project", [""])[0])
+            return self.search_semantic(
+                query.get("q", [""])[0],
+                query.get("project", [""])[0],
+                query.get("request", [""])[0],
+            )
         if parsed.path.startswith("/media/"):
             return self.media(parsed.path.rsplit("/", 1)[-1])
         if parsed.path in {"/", "/index.html"}:
@@ -1937,7 +2170,6 @@ class Handler(BaseHTTPRequestHandler):
             respond(self, {"error": str(exc)}, 400)
 
     def retranscribe_project(self, project_id: str) -> None:
-        backup_database("before-retranscribe", force=True)
         with db() as connection:
             project = connection.execute("SELECT id,queue_paused,queue_generation FROM projects WHERE id=?", (project_id,)).fetchone()
             if not project:
@@ -1954,6 +2186,22 @@ class Handler(BaseHTTPRequestHandler):
                     {"error": "Спочатку дочекайся завершення поточної черги"},
                     409,
                 )
+        try:
+            backup_database("before-retranscribe", force=True)
+        except (OSError, sqlite3.Error) as exc:
+            return respond(self, {"error": f"Не вдалося створити резервну копію: {exc}"}, 507)
+        with db() as connection:
+            project = connection.execute(
+                "SELECT id,queue_paused,queue_generation FROM projects WHERE id=?", (project_id,)
+            ).fetchone()
+            if not project:
+                return respond(self, {"error": "Проєкт не знайдено"}, 404)
+            busy = connection.execute(
+                "SELECT COUNT(*) FROM videos WHERE project_id=? AND status IN ('queued','processing','paused')",
+                (project_id,),
+            ).fetchone()[0]
+            if project["queue_paused"] or busy:
+                return respond(self, {"error": "Стан черги змінився. Спробуй ще раз після її завершення"}, 409)
             rows = connection.execute(
                 "SELECT id FROM videos WHERE project_id=? AND available=1 ORDER BY original_name",
                 (project_id,),
@@ -2020,8 +2268,11 @@ class Handler(BaseHTTPRequestHandler):
             all_ids = [
                 row[0] for row in connection.execute("SELECT id FROM videos WHERE project_id=?", (project_id,))
             ]
+        try:
+            backup_database("before-project-delete", force=True)
+        except (OSError, sqlite3.Error) as exc:
+            return respond(self, {"error": f"Не вдалося створити резервну копію: {exc}"}, 507)
         interrupt_project_processes(busy_ids, "cancelled")
-        backup_database("before-project-delete", force=True)
         with db() as connection:
             connection.execute("DELETE FROM projects WHERE id=?", (project_id,))
         for video_id in all_ids:
@@ -2112,9 +2363,19 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             respond(self, {"error": f"Точний пошук не виконався: {exc}"}, 500)
 
-    def search_semantic(self, raw: str, project_id: str) -> None:
+    def search_semantic(self, raw: str, project_id: str, request_id: str = "") -> None:
+        request_id = request_id or uuid.uuid4().hex
+        with search_request_lock:
+            latest_semantic_request[project_id] = request_id
+
+        def is_current() -> bool:
+            with search_request_lock:
+                return latest_semantic_request.get(project_id) == request_id
+
         try:
-            respond(self, semantic_search(raw, project_id) if normalize(raw) else [])
+            respond(self, semantic_search(raw, project_id, is_current) if normalize(raw) else [])
+        except SearchCancelled:
+            respond(self, [])
         except Exception as exc:
             respond(self, {"error": f"Пошук за змістом не виконався: {exc}"}, 500)
 

@@ -79,7 +79,7 @@
           <small>Для нових і повторно розпізнаних відео</small>
         </div>
         <div class="project-toolbar-actions">
-          <button id="rescan">Оновити папку</button>
+          <button id="rescan">Перевірити зміни в папці</button>
           <button id="retranscribe" class="danger">Перерозпізнати все</button>
           <button id="deleteProject" class="danger">Видалити проєкт</button>
         </div>
@@ -112,7 +112,7 @@
       <div class="search-zone-head"><div><p class="section-index">03 / ПОШУК</p><h2>Що потрібно знайти?</h2></div><p>Слово, фраза або просто сенс розмови</p></div>
       <div class="search-card">
         <label class="visually-hidden" for="searchInput">Фраза для пошуку в транскрипціях</label>
-        <input id="searchInput" type="search" placeholder="Наприклад: захист бізнесу від перевірок" autocomplete="off">
+        <input id="searchInput" type="search" autocomplete="off">
         <button id="searchButton">Знайти <span aria-hidden="true">↗</span></button>
       </div>
       <div id="searchScope" class="search-scope">Пошук охопить усі розпізнані відео поточного проєкту</div>
@@ -150,8 +150,25 @@
   </main>
   <footer class="app-footer">
     <p>Якщо щось не працює, пишіть на <a href="mailto:baldojnisyly@gmail.com">baldojnisyly@gmail.com</a></p>
-    <p class="app-build"><button id="checkUpdates" class="footer-update hidden">Перевірити оновлення</button><span>Rothbald</span> <strong id="appVersion">версія…</strong><span class="app-build-separator">·</span><span id="appBackendPicker" class="app-backend-picker choice-picker" data-picker-kind="backend"><button id="appBackendSelect" class="app-backend-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="appBackendMenu"><strong id="appBackend" class="app-backend">backend…</strong><span aria-hidden="true">⌄</span></button><span id="appBackendMenu" class="choice-menu choice-menu-up hidden" role="listbox" aria-label="Backend розпізнавання"></span></span></p>
+    <p class="app-build"><button id="checkUpdates" class="footer-update hidden" aria-label="Стан оновлення"></button><span>Rothbald</span> <strong id="appVersion">версія…</strong><span class="app-build-separator">·</span><span id="appBackendPicker" class="app-backend-picker choice-picker" data-picker-kind="backend"><button id="appBackendSelect" class="app-backend-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="appBackendMenu"><strong id="appBackend" class="app-backend">backend…</strong><span aria-hidden="true">⌄</span></button><span id="appBackendMenu" class="choice-menu choice-menu-up hidden" role="listbox" aria-label="Backend розпізнавання"></span></span></p>
   </footer>
+  <div id="newProjectModal" class="project-guide-modal hidden" role="dialog" aria-modal="true" aria-labelledby="newProjectTitle" aria-describedby="newProjectSummary">
+    <div class="project-guide-dialog">
+      <button id="closeNewProjectModal" class="update-close" aria-label="Закрити">×</button>
+      <p class="section-index">НОВИЙ ПРОЄКТ</p>
+      <h2 id="newProjectTitle">Обери папку з відео</h2>
+      <p id="newProjectSummary" class="project-guide-summary">Rothbald працюватиме з файлами прямо в обраній папці — нічого не копіюватиме й не змінюватиме.</p>
+      <ol class="project-guide-steps">
+        <li><strong>Обери папку</strong><span>із відео, які потрібно розпізнати.</span></li>
+        <li><strong>Дочекайся обробки</strong><span>прогрес буде видно в самому проєкті.</span></li>
+        <li><strong>Починай пошук</strong><span>введи слово, фразу або сенс розмови.</span></li>
+      </ol>
+      <div class="project-guide-actions">
+        <button id="cancelNewProject">Скасувати</button>
+        <button id="startNewProject" class="primary-action">Обрати папку <span aria-hidden="true">↗</span></button>
+      </div>
+    </div>
+  </div>
   <div id="updateModal" class="update-modal hidden" role="dialog" aria-modal="true" aria-labelledby="updateTitle" aria-describedby="updateSummary updateError">
     <div class="update-dialog">
       <button id="closeUpdateModal" class="update-close" aria-label="Закрити">×</button>

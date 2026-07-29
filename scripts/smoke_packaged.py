@@ -43,6 +43,18 @@ def main() -> None:
             "ROTHBALD_ENABLE_UPDATER": "0",
             "VIDEO_SEARCH_PORT": str(port),
         })
+        tools = subprocess.run(
+            [str(executable), "--runtime-smoke"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if tools.returncode:
+            raise SystemExit(
+                f"Packaged native tools failed with {tools.returncode}\n{tools.stdout}\n{tools.stderr}"
+            )
         process = subprocess.Popen(
             [str(executable)],
             env=env,

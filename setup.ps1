@@ -12,5 +12,5 @@ if (-not (Test-Path ".venv\Scripts\python.exe")) {
   python -m venv .venv
 }
 & .venv\Scripts\python.exe -m pip install --upgrade pip
-& .venv\Scripts\python.exe -m pip install -r requirements-windows.lock
+& .venv\Scripts\python.exe -m pip install --require-hashes -r requirements-windows.lock
 Write-Host "Готово. Запусти start.bat — моделі завантажаться у вікні Rothbald."

@@ -1,0 +1,13 @@
+{
+  "name": "rothbald-build-tools",
+  "private": true,
+  "version": "0.0.0",
+  "devDependencies": {
+    "@ast-grep/cli": "0.43.0"
+  },
+  "scripts": {
+    "scan": "ast-grep scan .",
+    "scan:test": "ast-grep test",
+    "test:update": "node --test tests/test_update_flow.cjs"
+  }
+}

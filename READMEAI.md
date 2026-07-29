@@ -105,16 +105,19 @@ Important resource decision: semantic embeddings must run on CPU. Do not move th
 - `POST /api/bootstrap/start` starts or retries the background check.
 - Every launch verifies local snapshots and checks the current Hugging Face revision when online. A changed revision downloads through the same progress UI and updates `model-manifest.json` only after both model snapshots verify.
 - Local snapshot checks always use the exact remote commit SHA when online or the saved manifest revision when offline. Individual files are downloaded by commit SHA and do not necessarily create a cached `refs/main`; never verify those downloads through an implicit `main`. A snapshot is ready only when every required file pattern exists.
+- Runtime loading follows the same invariant: MLX Whisper, faster-whisper, whisper.cpp, and multilingual-e5 receive the exact local snapshot path recorded by `model-manifest.json`, never a repository name that could resolve through mutable or absent `refs/main`. Speech checkpoint signatures and semantic model IDs include that revision. A meaning-model revision change automatically marks incompatible semantic indexes pending and rebuilds them without retranscribing media.
+- Frozen and new source installations set `HF_HOME` to the Rothbald data directory's `models/` folder. Models are therefore app-owned rather than silently spread through a global user cache.
 - First launch requires the network. Later launches may proceed offline when both local snapshots are intact.
 - Queue work blocks on the model manager, while project and static endpoints stay available.
 
 ### Application updates
 
 - Automatic binary updates are enabled only in frozen builds whose embedded channel is `release`. Source and normal CI builds stay disabled; `ROTHBALD_ENABLE_UPDATER=1` exists only for controlled development tests.
-- After the hardware/model startup gate is ready, the UI checks `https://github.com/BaldojniSylyUkrainy/Rothbald/releases/latest/download/latest.json` in a background thread. Manual checking remains available from the footer. A user-dismissed updater stays closed through the active check/download and terminal result; progress and retry remain reachable from the footer.
+- After the hardware/model startup gate is ready, the UI checks `https://github.com/BaldojniSylyUkrainy/Rothbald/releases/latest/download/latest.json` in a background thread. There is no idle manual-check button in the footer; it appears only as a contextual status/action during a download or when a completed download/error needs attention. A user-dismissed updater stays closed through the active check/download and terminal result; progress and retry remain reachable from that contextual footer action.
 - `latest.json` is signed with Ed25519. `update_manifest.py` contains only the public key and accepts only schema 1, four-part versions, the exact Rothbald GitHub release path, exact supported platform filenames, positive sizes, and lowercase SHA-256 values.
 - The matching private key must exist only as the protected `release` environment secret `ROTHBALD_UPDATER_PRIVATE_KEY` and in an encrypted owner backup. Never commit it or place it in a build artifact. Losing it after the first updater-enabled release prevents existing installations from trusting future manifests; rotating it requires a transition release signed by the existing key.
 - The updater streams the selected installer into the platform application-data `updates/` directory, rejects files larger or smaller than the signed size, verifies SHA-256 before the atomic rename, and verifies size/SHA-256 again immediately before native launch.
+- A verified installer may remain while its native installer replaces the running application. The next Rothbald launch removes obsolete files from `updates/`.
 - The updater modal has an explicit user-controlled visibility state. Polling may update a visible modal but must never reopen one the user closed. During background download the footer exposes progress; terminal success/error uses a toast plus footer action. `Пізніше` suppresses the same available version for 24 hours, while manual checking always overrides the snooze.
 - On Windows, Rothbald starts the verified Inno Setup executable and then closes so installation can replace files. On macOS, it opens the verified notarized DMG and also closes so Finder can replace the application safely; replacement in `Applications` remains a user action.
 - `RELEASE_NOTES.md` must begin with `# Rothbald <VERSION>`, contain a real section and bullet list, be substantive, and contain no placeholder markers. `scripts/validate_release_notes.py` is required in normal CI and release preflight. The release manifest embeds this exact text and GitHub Release uses the same file through `--notes-file`.
@@ -122,7 +125,7 @@ Important resource decision: semantic embeddings must run on CPU. Do not move th
 
 ### Atomic transcript replacement
 
-New transcription output is parsed before existing segments are deleted. Existing transcript/search data therefore remains available until a replacement succeeds, including when rescan detects changed source media. Rescan must never delete segments, semantic chunks, checkpoints, or transcript JSON preemptively. A successful replacement increments `transcript_revision`; semantic chunks are stamped with the same revision and are searchable only when `semantic_revision == transcript_revision`. If semantic reindexing fails, vectors from the older transcript can never leak into results. On transcription failure, the prior searchable data remains.
+New transcription output is parsed before existing segments are deleted. Existing transcript/search data therefore remains available until a replacement succeeds, including when rescan detects changed source media. Rescan must never delete segments, semantic chunks, checkpoints, or transcript JSON preemptively. The source size, mtime, and fast fingerprint are checked before work, around every long part, and immediately before commit; a changed source discards the replacement and asks for a rescan. A successful replacement increments `transcript_revision`; semantic chunks are stamped with the same revision and are searchable only when `semantic_revision == transcript_revision`. SQLite is authoritative: failure to write the convenience transcript JSON is logged but never prevents semantic indexing. If semantic reindexing fails, vectors from the older transcript can never leak into results. On transcription failure, the prior searchable data remains.
 
 ### Semantic indexing
 
@@ -171,7 +174,8 @@ The search bar contains only the query and the general `Знайти` button. Pr
 - `Locate` changes the project's root folder while preserving stable video IDs, transcripts, semantic chunks, and queue history. Videos are reconnected using their relative paths.
 - Missing media is visibly marked, cannot be played or requeued, but its completed transcript remains searchable.
 - `До проєктів` returns to the empty home screen without deleting data or stopping background work.
-- `Оновити папку` rescans and queues only new or modified media.
+- `Новий проєкт` first opens a concise three-step explanation, then the native folder picker; cancelling either step creates nothing.
+- `Перевірити зміни в папці` rescans and queues only new or modified media.
 - `Перерозпізнати все` is available only when the current queue is idle.
 - It requires browser confirmation and queues every currently available video in the selected project.
 - It does not immediately delete old transcripts; each is atomically replaced after successful reprocessing.
@@ -252,13 +256,13 @@ The desktop launcher binds the local HTTP socket synchronously before it creates
 - Server-side changes require stopping with `Control-C` and rerunning `start.command`.
 - Static changes usually require only a hard browser reload, but restarting is the safest handoff instruction.
 - If macOS blocks a command file, the user may need to open it through Finder's context menu or Privacy & Security.
-- Keep the Terminal window open during long transcription runs. `start.command` automatically prevents idle system sleep through `caffeinate`; no manual Energy settings change is normally needed.
+- Source launch keeps its Terminal open. The packaged application and source launcher both prevent idle system sleep only while models, transcription, or semantic indexing are active; the screen may still turn off normally.
 - Screen locking and display sleep are safe. Closing the MacBook lid normally forces sleep and cannot be reliably overridden by this app.
 - External SSD disconnection causes media access errors but must not delete completed transcript data.
 - `setup.command` performs Apple-Silicon, Python ≥3.11, ffmpeg/ffprobe, and 8-GB-free-space checks and installs `requirements-macos.lock`; `setup.ps1` installs `requirements-windows.lock`. Model verification/download now belongs to the in-app model gate.
 - `setup.ps1` performs the corresponding Windows dependency checks and installs the platform-marked requirements.
-- Packaged Windows builds must run `scripts/build_whisper_cpp_windows.ps1` before PyInstaller. It prepares a pinned SHA-256-verified Vulkan SDK when no system SDK is available, downloads and verifies the pinned whisper.cpp source archive, builds static `whisper-cli.exe` with Vulkan plus `rothbald-vulkan-probe.exe`, and places both under ignored `build/windows-tools/` for bundling.
-- `.github/workflows/build.yml` tests and packages on native `macos-15` ARM64 and `windows-latest` runners for `main`, pull requests, and explicit manual dispatches. Pushing a release tag must not start a duplicate native build; the manually dispatched release workflow is the only post-tag build. Pull requests verify full packaging without uploading the large bundles; main/manual CI artifacts are retained for one day.
+- Packaged Windows builds must run `scripts/prepare_ffmpeg_windows.ps1` and `scripts/build_whisper_cpp_windows.ps1` before PyInstaller. The former resolves and validates the real Chocolatey FFmpeg binaries instead of its runner-local shims. The latter prepares a pinned SHA-256-verified Vulkan SDK when no system SDK is available, downloads and verifies the pinned whisper.cpp source archive, builds static `whisper-cli.exe` with Vulkan plus `rothbald-vulkan-probe.exe`, and places all runtime tools under ignored `build/windows-tools/` for bundling.
+- `.github/workflows/build.yml` tests and packages on native `macos-15` ARM64 and `windows-latest` runners for `main`, pull requests, and explicit manual dispatches. Pushing a release tag must not start a duplicate native build; the manually dispatched release workflow is the only post-tag build. Pull requests verify full packaging without uploading the large bundles; main/manual CI artifacts are retained for one day. Python installs require hashes, the JavaScript build tool has an npm lock, and every GitHub Action is pinned to a full commit SHA.
 - `.github/workflows/release.yml` is manual-only and uses the `release` environment. Its free Ubuntu preflight accepts only an existing four-part tag that equals `VERSION`, points at the dispatched current `main` commit, validates `RELEASE_NOTES.md`, and requires every Apple and updater credential before native jobs start. It installs platform-specific runtime/build locks, launches a smoke test against each packaged native executable, builds an intentionally unsigned Windows Inno Setup installer, signs/notarizes/staples the Apple Silicon DMG, restores the runner's original Keychain search list, generates checksums plus a signed `latest.json`, and creates a draft release whose body is the same `RELEASE_NOTES.md`. The draft must be published manually before `/releases/latest` exposes it to installed applications.
 - Build version metadata is generated from `VERSION` before PyInstaller. The packaged UI reads `/api/app`; never hardcode a displayed version in HTML or JavaScript. `scripts/versioning.py fix|feature` implements the documented `MAJOR.MINOR.PATCH.0` policy and synchronizes `VERSION`, release notes, and the manual workflow tag default; `check` is a CI contract.
 
@@ -309,10 +313,23 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 
 - Native CI bundles are prepared through PyInstaller and GitHub Actions; the manual release path additionally signs and notarizes Apple Silicon.
 - The bundle opens as a standalone PySide6/QtWebEngine desktop window, not as a browser tab. PyInstaller embeds the platform-specific Dock/executable icon.
+- A native single-instance channel focuses the existing window on a second launch. Long active work holds an OS sleep assertion; idle Rothbald does not keep the computer awake.
+- Every user-initiated native window close requires confirmation. The dialog lists live model/update downloads, transcription and semantic queues, and media checks; `Не закривати` is the default and Escape action. A verified updater installer handoff is the sole intentional bypass.
 - Model updates are checked in-app against published Hugging Face revisions and downloaded with exact byte progress, speed, and ETA.
 - Draft GitHub Release hosting, embedded build identity, macOS Developer ID signing/notarization, signed application-update manifests, verified in-app downloads, and native installer handoff are implemented. Windows artifacts are intentionally unsigned until a trusted Authenticode certificate exists and may trigger SmartScreen; the updater manifest remains Ed25519-signed independently.
 
 ## Changelog
+
+### 2026-07-29 — full MVP reliability hardening
+
+- Bound every model runtime to the exact verified Hugging Face snapshot, moved new model caches under Rothbald data, revisioned transcription checkpoints/semantic indexes, and added automatic semantic rebuilding after a model update.
+- Made Windows packaging reject Chocolatey shims, added real FFmpeg preparation and packaged tool smoke checks, protected long jobs from idle sleep, and added native single-instance focus behavior.
+- Added mid-transcription source identity checks, non-blocking JSON export failure handling, safe backup ordering, duration-job deduplication, stale semantic-search cancellation, bounded semantic matrix caching, and narrower indexed exact-search vocabulary reads.
+- Added hashed Python locks, npm integrity locking, commit-pinned Actions, Dependabot configuration, CodeQL, third-party notices, updater artifact cleanup, and regression tests for the new failure paths.
+
+### 2026-07-29 — clearer first-project and search flow
+
+- Removed the idle manual update-check control while preserving contextual download/error status, removed the language-confusing search example, added a short accessible three-step guide before the native new-project folder picker, and renamed the rescan action to `Перевірити зміни в папці`.
 
 ### 2026-07-29 — unsigned Windows release parity
 

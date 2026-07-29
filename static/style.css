@@ -381,10 +381,32 @@ aside { min-width: 0; border-right: 1px solid var(--line); padding-right: 28px; 
 }
 .footer-update:hover { background: var(--paper); color: var(--text); }
 .footer-update.update-attention { border-color: #77777f; color: var(--text); }
-.update-modal {
+.update-modal, .project-guide-modal {
   position: fixed; z-index: 200; inset: 0; display: grid; place-items: center;
   overflow: auto; padding: 24px; background: #050506d9; backdrop-filter: blur(10px);
 }
+.project-guide-dialog {
+  position: relative; width: min(620px, 100%); padding: 30px; border: 1px solid #4c4c52;
+  border-radius: 18px; background: var(--panel); box-shadow: 0 28px 90px #000c;
+}
+.project-guide-dialog h2 {
+  margin: 10px 45px 10px 0; font-size: clamp(30px, 5vw, 48px); line-height: 1;
+  letter-spacing: -.05em;
+}
+.project-guide-summary { max-width: 520px; margin: 0; color: var(--muted); }
+.project-guide-steps {
+  display: grid; gap: 0; margin: 25px 0 0; padding: 0; list-style: none;
+  counter-reset: project-step;
+}
+.project-guide-steps li {
+  display: grid; grid-template-columns: 30px minmax(130px, .7fr) minmax(0, 1.3fr); gap: 12px;
+  align-items: baseline; padding: 13px 0; border-top: 1px solid var(--line); counter-increment: project-step;
+}
+.project-guide-steps li::before { color: var(--signal); content: "0" counter(project-step); font-size: 10px; font-weight: 800; }
+.project-guide-steps strong { font-size: 13px; }
+.project-guide-steps span { color: var(--muted); font-size: 12px; }
+.project-guide-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 26px; }
+.project-guide-actions .primary-action { min-width: 190px; }
 .update-dialog {
   position: relative; width: min(680px, 100%); max-height: min(760px, calc(100vh - 48px));
   overflow: auto; padding: 30px; border: 1px solid #4c4c52; border-radius: 18px;
@@ -453,6 +475,10 @@ aside { min-width: 0; border-right: 1px solid var(--line); padding-right: 28px; 
   .hardware-stat + .hardware-stat { border-top: 1px solid var(--line); border-left: 0; }
   .project-toolbar-actions { align-items: stretch; flex-direction: column; }
   .app-footer { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .project-guide-steps li { grid-template-columns: 24px 1fr; }
+  .project-guide-steps span { grid-column: 2; }
+  .project-guide-actions { align-items: stretch; flex-direction: column-reverse; }
+  .project-guide-actions button { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

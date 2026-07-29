@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from hardware_check import runtime_tool_path
-from model_manager import WINDOWS_VULKAN_WHISPER_PATTERNS, WINDOWS_VULKAN_WHISPER_REPO
+from model_manager import WINDOWS_VULKAN_WHISPER_PATTERNS
 from process_utils import quiet_process_options
 
 
@@ -105,16 +105,7 @@ def parse_whisper_cpp_result(payload: dict) -> dict:
     }
 
 
-def _local_whisper_cpp_model() -> Path:
-    from huggingface_hub import snapshot_download
-
-    snapshot = Path(
-        snapshot_download(
-            repo_id=WINDOWS_VULKAN_WHISPER_REPO,
-            allow_patterns=list(WINDOWS_VULKAN_WHISPER_PATTERNS),
-            local_files_only=True,
-        )
-    )
+def _local_whisper_cpp_model(snapshot: Path) -> Path:
     model = snapshot / WINDOWS_VULKAN_WHISPER_PATTERNS[0]
     if not model.is_file():
         raise RuntimeError("Локальну модель Whisper для Vulkan не знайдено")
@@ -143,7 +134,11 @@ def _run_whisper_cpp(command: list[str], environment: dict[str, str]) -> tuple[i
 
 
 def whisper_cpp_transcribe(
-    input_path: Path, output_path: Path, preference: str, language_mode: str = "standard"
+    input_path: Path,
+    output_path: Path,
+    preference: str,
+    language_mode: str = "standard",
+    model_snapshot: Path | None = None,
 ) -> dict:
     executable = runtime_tool_path("whisper-cli")
     if not executable:
@@ -158,7 +153,7 @@ def whisper_cpp_transcribe(
     base_command = [
         str(executable),
         "--model",
-        str(_local_whisper_cpp_model()),
+        str(_local_whisper_cpp_model(model_snapshot or Path("."))),
         "--file",
         str(input_path),
         "--language",
@@ -201,7 +196,13 @@ def main() -> None:
 
     preference = os.environ.get("ROTHBALD_DEVICE", "auto").lower()
     if sys.platform == "win32" and preference.startswith("vulkan:"):
-        result = whisper_cpp_transcribe(input_path, output_path, preference, language_mode)
+        result = whisper_cpp_transcribe(
+            input_path,
+            output_path,
+            preference,
+            language_mode,
+            model_snapshot=Path(model),
+        )
     elif sys.platform == "win32":
         result = faster_transcribe(input_path, model, language_mode)
     else:

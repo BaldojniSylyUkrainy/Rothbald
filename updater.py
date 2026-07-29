@@ -67,6 +67,18 @@ class UpdateManager:
             "error": None,
             "retry_action": None,
         }
+        self._cleanup_previous_downloads()
+
+    def _cleanup_previous_downloads(self) -> None:
+        updates_dir = self.data_dir / "updates"
+        if not updates_dir.is_dir():
+            return
+        for stale in updates_dir.iterdir():
+            if stale.is_file():
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
 
     def set_installer_callback(self, callback: Callable[[Path], bool] | None) -> None:
         self._installer_callback = callback

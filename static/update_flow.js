@@ -43,7 +43,7 @@
     if (status === 'available') return 'Доступне оновлення';
     if (status === 'downloaded') return 'Оновлення готове';
     if (status === 'error') return 'Помилка оновлення';
-    return 'Перевірити оновлення';
+    return '';
   }
 
   function isSnoozed(record, version, now = Date.now()) {

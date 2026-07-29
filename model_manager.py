@@ -3,6 +3,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -33,6 +34,81 @@ class ModelSpec:
     label: str
     repo_id: str
     patterns: tuple[str, ...]
+
+
+def configure_model_cache(state_dir: Path) -> Path:
+    """Use app-owned storage and hard-link compatible legacy snapshots once."""
+    configured = os.environ.get("HF_HOME")
+    if configured:
+        return Path(configured)
+    destination_home = state_dir / "models"
+    legacy_home = Path.home() / ".cache" / "huggingface"
+    try:
+        manifest = json.loads((state_dir / "model-manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        manifest = {}
+    specs = {spec.key: spec for spec in model_specs()}
+    for key, entry in manifest.get("models", {}).items():
+        spec = specs.get(key)
+        revision = str(entry.get("revision", ""))
+        if not spec or entry.get("repo") != spec.repo_id or not revision:
+            continue
+        repository = "models--" + spec.repo_id.replace("/", "--")
+        source = legacy_home / "hub" / repository / "snapshots" / revision
+        destination = destination_home / "hub" / repository / "snapshots" / revision
+        if not source.is_dir():
+            continue
+        for candidate in source.rglob("*"):
+            if not candidate.is_file():
+                continue
+            relative = candidate.relative_to(source)
+            if not any(fnmatch.fnmatch(relative.as_posix(), pattern) for pattern in spec.patterns):
+                continue
+            target = destination / relative
+            if target.is_file():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(candidate.resolve(), target)
+            except OSError:
+                shutil.copy2(candidate, target)
+    os.environ["HF_HOME"] = str(destination_home)
+    return destination_home
+
+
+def model_revision(state_dir: Path, key: str, repo_id: str) -> str:
+    manifest_path = state_dir / "model-manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        model = manifest["models"][key]
+        revision = str(model["revision"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError("Маніфест встановлених моделей відсутній або пошкоджений") from exc
+    if model.get("repo") != repo_id or not revision or revision == "offline":
+        raise RuntimeError("Маніфест моделі не відповідає поточній конфігурації Rothbald")
+    return revision
+
+
+def resolve_model_snapshot(state_dir: Path, key: str, repo_id: str) -> Path:
+    """Resolve only the exact model revision accepted by the startup gate."""
+    revision = model_revision(state_dir, key, repo_id)
+    spec = next(
+        (candidate for candidate in model_specs() if candidate.key == key and candidate.repo_id == repo_id),
+        None,
+    )
+    if spec is None:
+        raise RuntimeError("Модель не відповідає поточному backend Rothbald")
+    try:
+        from huggingface_hub import snapshot_download
+
+        return Path(snapshot_download(
+            repo_id=repo_id,
+            revision=revision,
+            allow_patterns=list(spec.patterns),
+            local_files_only=True,
+        ))
+    except Exception as exc:
+        raise RuntimeError("Перевірену локальну ревізію моделі не знайдено") from exc
 
 
 def whisper_spec_for_device(
