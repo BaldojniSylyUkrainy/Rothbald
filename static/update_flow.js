@@ -33,9 +33,13 @@
   }
 
   function laterLabel(status) {
-    if (status === 'downloading') return 'Згорнути';
+    if (status === 'downloading') return 'Оновлюю…';
     if (['downloaded', 'error'].includes(status)) return 'Закрити';
     return 'Пізніше';
+  }
+
+  function canDismiss(status) {
+    return status !== 'downloading';
   }
 
   function shortcutLabel(status, percent = 0) {
@@ -50,5 +54,5 @@
     return Boolean(record && record.version === version && Number(record.until) > now);
   }
 
-  return { decide, laterLabel, shortcutLabel, isSnoozed };
+  return { canDismiss, decide, laterLabel, shortcutLabel, isSnoozed };
 }));

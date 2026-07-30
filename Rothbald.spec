@@ -45,6 +45,9 @@ hiddenimports += [
     "PySide6.QtGui",
     "PySide6.QtWidgets",
     "PySide6.QtNetwork",
+    "PySide6.QtMultimedia",
+    "PySide6.QtMultimediaWidgets",
+    "PySide6.QtWebChannel",
     "PySide6.QtWebEngineCore",
     "PySide6.QtWebEngineWidgets",
 ]

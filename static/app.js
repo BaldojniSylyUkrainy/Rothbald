@@ -5,9 +5,10 @@ const state = {
   searchControllers: [], searchLoading: { exact: false, semantic: false }, resultObserver: null,
   appInfo: null, appReady: false, updateStarted: false, updateManual: false, updateTimer: null,
   updatePollInFlight: false, updateActionPending: false, updateSnapshot: null, updateReturnFocus: null,
-  updateDismissed: false,
+  updateDismissed: false, updateInstallRequested: false,
   projectGuideReturnFocus: null,
   backendBusy: null,
+  nativePlayer: null, nativePlayerGeometryFrame: null,
 };
 
 const $ = selector => document.querySelector(selector);
@@ -21,6 +22,42 @@ const results = $('#results');
 const updateFlow = globalThis.RothbaldUpdateFlow;
 const UPDATE_SNOOZE_KEY = 'rothbald-update-snooze';
 const UPDATE_SNOOZE_MS = 24 * 60 * 60 * 1000;
+
+function smoothScrollTo(node, block = 'start') {
+  if (!node) return;
+  const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+  requestAnimationFrame(() => node.scrollIntoView({ behavior, block, inline: 'nearest' }));
+}
+
+function syncNativePlayerGeometry() {
+  if (!state.nativePlayer) return;
+  cancelAnimationFrame(state.nativePlayerGeometryFrame);
+  state.nativePlayerGeometryFrame = requestAnimationFrame(() => {
+    const rect = player.getBoundingClientRect();
+    const visible = Boolean(state.selected)
+      && rect.bottom > 0
+      && rect.top < window.innerHeight
+      && rect.right > 0
+      && rect.left < window.innerWidth;
+    state.nativePlayer.setPlayerGeometry(
+      Math.round(rect.left),
+      Math.round(rect.top),
+      Math.round(rect.width),
+      Math.round(rect.height),
+      visible,
+    );
+  });
+}
+
+function initializeNativePlayer() {
+  if (!globalThis.QWebChannel || !globalThis.qt?.webChannelTransport) return;
+  new globalThis.QWebChannel(globalThis.qt.webChannelTransport, channel => {
+    state.nativePlayer = channel.objects.nativePlayer;
+    document.body.classList.add('native-playback');
+    state.nativePlayer.errorOccurred.connect(message => toast(message));
+    syncNativePlayerGeometry();
+  });
+}
 
 const esc = value => String(value).replace(/[&<>'"]/g, character => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
@@ -173,6 +210,7 @@ function openUpdateModal() {
 
 function closeUpdateModal({ snooze = false, user = true } = {}) {
   const status = state.updateSnapshot;
+  if (!updateFlow.canDismiss(status?.status)) return;
   if (user) state.updateDismissed = true;
   if (snooze && status?.status === 'available') snoozeUpdate(status.version);
   state.updateManual = false;
@@ -196,9 +234,7 @@ function renderUpdateModal(status) {
     ? `Rothbald ${status.version}`
     : 'Оновлення Rothbald';
   $('#updateSummary').textContent = status.status === 'downloaded'
-    ? status.platform === 'darwin-aarch64'
-      ? 'Оновлення перевірено. Rothbald відкриє DMG і закриється, щоб ти міг замінити застосунок у папці Applications.'
-      : 'Оновлення перевірено. Installer закриє Rothbald після запуску.'
+    ? 'Оновлення перевірено. Rothbald закриється, встановить нову версію та відкриється знову автоматично.'
     : `Встановлена версія ${status.current_version}. Перед інсталяцією файл буде перевірено за підписом і SHA-256.`;
   $('#updateNotes').innerHTML = releaseNotesHtml(status.notes);
   const progressVisible = ['downloading', 'downloaded'].includes(status.status);
@@ -217,9 +253,12 @@ function renderUpdateModal(status) {
   install.dataset.updateStatus = status.status;
   install.dataset.updatePlatform = status.platform;
   install.textContent = status.status === 'downloaded'
-    ? status.platform === 'darwin-aarch64' ? 'Відкрити DMG' : 'Запустити installer'
-    : status.status === 'downloading' ? 'Завантажую…'
-      : status.status === 'error' ? 'Спробувати ще раз' : 'Завантажити оновлення';
+    ? 'Встановити зараз'
+    : status.status === 'downloading' ? 'Оновлюю…'
+      : status.status === 'error' ? 'Спробувати ще раз' : 'Оновити';
+  const downloading = status.status === 'downloading';
+  $('#closeUpdateModal').classList.toggle('hidden', downloading);
+  $('#laterUpdate').classList.toggle('hidden', downloading);
   $('#laterUpdate').textContent = updateFlow.laterLabel(status.status);
 }
 
@@ -264,6 +303,12 @@ async function pollUpdate() {
     const status = await api('/api/update');
     if (!status.enabled) return;
     const decision = applyUpdateStatus(status);
+    if (status.status === 'downloaded' && state.updateInstallRequested && !state.updateActionPending) {
+      state.updateInstallRequested = false;
+      await installDownloadedUpdate();
+      return;
+    }
+    if (status.status === 'error') state.updateInstallRequested = false;
     if (decision.pollDelay) state.updateTimer = setTimeout(pollUpdate, decision.pollDelay);
   } catch (error) {
     if (state.updateManual) toast(error.message);
@@ -310,29 +355,46 @@ async function updatePrimaryAction() {
   $('#installUpdate').disabled = true;
   try {
     if (status === 'downloaded') {
-      await api('/api/update/install', { method: 'POST' });
-      if ($('#installUpdate').dataset.updatePlatform === 'darwin-aarch64') {
-        toast('DMG відкрито. Rothbald зараз закриється для безпечної заміни застосунку.');
-      }
+      await installDownloadedUpdate();
       return;
     }
     if (status === 'error') {
       if (state.updateSnapshot?.retry_action === 'download') {
+        state.updateInstallRequested = true;
         await api('/api/update/download', { method: 'POST' });
         await pollUpdate();
+      } else if (state.updateSnapshot?.retry_action === 'install') {
+        await installDownloadedUpdate();
       } else {
         await checkForUpdates(true);
       }
       return;
     }
+    state.updateInstallRequested = true;
     await api('/api/update/download', { method: 'POST' });
     await pollUpdate();
   } catch (error) {
+    state.updateInstallRequested = false;
     const failed = { ...(state.updateSnapshot || {}), status: 'error', error: error.message, retry_action: 'check' };
     applyUpdateStatus(failed, { manual: true });
   } finally {
     state.updateActionPending = false;
     if (state.updateSnapshot) renderUpdateModal(state.updateSnapshot);
+  }
+}
+
+async function installDownloadedUpdate() {
+  try {
+    await api('/api/update/install', { method: 'POST' });
+    toast('Rothbald зараз закриється, встановить оновлення та відкриється знову.');
+  } catch (error) {
+    const failed = {
+      ...(state.updateSnapshot || {}),
+      status: 'error',
+      error: error.message,
+      retry_action: 'install',
+    };
+    applyUpdateStatus(failed, { manual: true });
   }
 }
 
@@ -902,14 +964,23 @@ function selectVideo(id, at = null) {
   playerPath.textContent = relativePath && relativePath !== video?.name ? relativePath : '';
   playerPath.title = relativePath;
   playerPath.classList.toggle('hidden', !playerPath.textContent);
-  player.src = `/media/${id}`;
   playerCard.classList.remove('empty-player');
-  const seek = () => {
-    if (at !== null) player.currentTime = Math.max(0, +at - 1.5);
-    player.play().catch(() => {});
-    player.removeEventListener('loadedmetadata', seek);
-  };
-  if (at !== null) player.addEventListener('loadedmetadata', seek);
+  if (state.nativePlayer) {
+    player.pause();
+    player.removeAttribute('src');
+    state.nativePlayer.select(id, at === null ? -1 : +at);
+    syncNativePlayerGeometry();
+  } else {
+    const seek = () => {
+      if (at !== null) player.currentTime = Math.max(0, +at - 1.5);
+      player.removeEventListener('loadedmetadata', seek);
+    };
+    if (at !== null) player.addEventListener('loadedmetadata', seek);
+    player.src = `/media/${id}`;
+    player.load();
+    if (at !== null && player.readyState >= HTMLMediaElement.HAVE_METADATA) seek();
+    player.play().catch(() => toast('Не вдалося відтворити відео в цьому форматі.'));
+  }
   renderVideos();
 }
 
@@ -918,12 +989,14 @@ function clearVideoSelection(render = true) {
   player.pause();
   player.removeAttribute('src');
   player.load();
+  state.nativePlayer?.clear();
   state.selected = null;
   playerTitle.textContent = '';
   playerTitle.removeAttribute('title');
   playerPath.textContent = '';
   playerPath.removeAttribute('title');
   playerCard.classList.add('empty-player');
+  syncNativePlayerGeometry();
   if (render) renderVideos();
 }
 
@@ -1123,6 +1196,7 @@ async function search() {
   state.resultTab = 'exact';
   state.searchLoading = { exact: true, semantic: true };
   renderSearchResults();
+  smoothScrollTo($('.results-title'));
   const params = new URLSearchParams({ q: query, project });
 
   const run = async type => {
@@ -1211,6 +1285,7 @@ results.addEventListener('click', event => {
   result.classList.add('active');
   result.setAttribute('aria-pressed', 'true');
   selectVideo(result.dataset.video, result.dataset.time);
+  smoothScrollTo(playerCard);
 });
 $('#resultTabs').addEventListener('click', event => {
   const tab = event.target.closest('[data-result-tab]');
@@ -1264,6 +1339,7 @@ $('#laterUpdate').addEventListener('click', () => closeUpdateModal({ snooze: tru
 $('#installUpdate').addEventListener('click', updatePrimaryAction);
 $('#updateModal').addEventListener('keydown', event => {
   if (event.key === 'Escape') {
+    if (!updateFlow.canDismiss(state.updateSnapshot?.status)) return;
     event.preventDefault();
     closeUpdateModal();
     return;
@@ -1281,5 +1357,9 @@ $('#updateModal').addEventListener('keydown', event => {
     first.focus();
   }
 });
+window.addEventListener('scroll', syncNativePlayerGeometry, { passive: true });
+window.addEventListener('resize', syncNativePlayerGeometry);
+new ResizeObserver(syncNativePlayerGeometry).observe(player);
+initializeNativePlayer();
 loadAppInfo();
 bootstrapModels();

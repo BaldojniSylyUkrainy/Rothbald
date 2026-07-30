@@ -60,7 +60,7 @@ jobs:
           python scripts/prepare_build.py
           npm run scan
           npm run scan:test
-          python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/smoke_packaged.py scripts/validate_release_notes.py scripts/versioning.py
+          python -m py_compile app_info.py hardware_check.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py native_update.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/smoke_packaged.py scripts/validate_release_notes.py scripts/versioning.py
           node --check static/app.js
           node --check static/update_flow.js
           node --test tests/test_update_flow.cjs

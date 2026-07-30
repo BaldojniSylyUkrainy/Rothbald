@@ -1,6 +1,6 @@
 # READMEAI — project memory for Codex
 
-Last updated: 2026-07-29
+Last updated: 2026-07-30
 
 This file is the authoritative technical memory for the local video-search application. Read it completely before diagnosing or modifying the app. After every material change, update the affected sections and append a dated changelog entry.
 
@@ -22,7 +22,7 @@ Selecting a video only controls the player. It must never narrow the search scop
 - Apple Silicon uses `mlx-whisper` and is the primary optimized target.
 - Packaged macOS builds require macOS 14.0 or newer. The pinned PyTorch Apple Silicon wheel has a macOS 14 deployment target; do not advertise Ventura compatibility unless the dependency set changes and a real Ventura build is verified.
 - Windows x64 keeps one Whisper Large V3 Turbo model family with backend-specific local artifacts. NVIDIA uses `faster-whisper`/CTranslate2 through CUDA; AMD and non-NVIDIA Vulkan devices use the bundled `whisper.cpp` Vulkan backend; CPU remains the final fallback. Intel Vulkan is exposed as experimental until representative Intel hardware is verified.
-- Source launches require `ffmpeg` and `ffprobe`; packaged builds include the Python runtime, PySide6/QtWebEngine, both media binaries, and all backend dependencies.
+- Source launches require `ffmpeg` and `ffprobe`; packaged builds include the Python runtime, PySide6/QtWebEngine/Qt Multimedia, both media binaries, and all backend dependencies.
 - Python virtual environment: `.venv/`.
 - Local URL: `http://127.0.0.1:8765`.
 - The local URL is an internal transport only. `rothbald.py` presents it in a dedicated native PySide6 window through QtWebEngine. Packaged users do not interact with an external browser and never install a web runtime separately.
@@ -41,6 +41,7 @@ Selecting a video only controls the player. It must never narrow the search scop
 - `process_utils.py` — shared Windows child-process flags that suppress console windows while preserving managed process groups.
 - `tools/vulkan_probe/` / `scripts/build_whisper_cpp_windows.ps1` — exact Windows Vulkan-device enumeration and reproducible pinned whisper.cpp Vulkan build.
 - `rothbald.py` / `Rothbald.spec` — PySide6/QtWebEngine native desktop-window launcher and self-contained PyInstaller definition.
+- `native_update.py` — fail-closed platform updater handoff, including the detached verified-DMG app-bundle swap on macOS and silent Inno Setup arguments on Windows.
 - `assets/app-icon.png`, `.icns`, and `.ico` — rounded `Ro` application icon derived from the same Bradley Hand wordmark used by the UI.
 - `static/index.html` — application markup.
 - `static/app.js` — client state, queue progress, search tabs, video selection, and project actions.
@@ -118,8 +119,8 @@ Important resource decision: semantic embeddings must run on CPU. Do not move th
 - The matching private key must exist only as the protected `release` environment secret `ROTHBALD_UPDATER_PRIVATE_KEY` and in an encrypted owner backup. Never commit it or place it in a build artifact. Losing it after the first updater-enabled release prevents existing installations from trusting future manifests; rotating it requires a transition release signed by the existing key.
 - The updater streams the selected installer into the platform application-data `updates/` directory, rejects files larger or smaller than the signed size, verifies SHA-256 before the atomic rename, and verifies size/SHA-256 again immediately before native launch.
 - A verified installer may remain while its native installer replaces the running application. The next Rothbald launch removes obsolete files from `updates/`.
-- The updater modal has an explicit user-controlled visibility state. Polling may update a visible modal but must never reopen one the user closed. During background download the footer exposes progress; terminal success/error uses a toast plus footer action. `Пізніше` suppresses the same available version for 24 hours, while manual checking always overrides the snooze.
-- On Windows, Rothbald starts the verified Inno Setup executable and then closes so installation can replace files. On macOS, it opens the verified notarized DMG and also closes so Finder can replace the application safely; replacement in `Applications` remains a user action.
+- The updater modal stays open during an active user-started download and hides its close/`Пізніше` actions so progress cannot be lost. `Пізніше` still suppresses an available version for 24 hours before downloading starts, while manual checking overrides the snooze. Terminal errors remain retryable.
+- One `Оновити` action carries download through install. On Windows, Rothbald starts the verified Inno Setup executable in silent close/restart mode and exits. On macOS, a detached helper waits for the managed shutdown, mounts the already verified notarized DMG read-only, stages and validates `Rothbald.app`, swaps only the running installed bundle, rolls back/reopens the old bundle on failure, and launches the new bundle on success.
 - `RELEASE_NOTES.md` must begin with `# Rothbald <VERSION>`, contain a real section and bullet list, be substantive, and contain no placeholder markers. `scripts/validate_release_notes.py` is required in normal CI and release preflight. The release manifest embeds this exact text and GitHub Release uses the same file through `--notes-file`.
 - The updater modal renders a deliberately restricted Markdown subset: headings, paragraphs, unordered lists, and ordered lists. All text is escaped before HTML insertion.
 
@@ -154,6 +155,7 @@ The search bar contains only the query and the general `Знайти` button. Pr
 - There are no count limits on exact or semantic results.
 - The browser launches exact and semantic endpoints independently. Exact hits render as soon as they arrive; a slow semantic query does not block them. A newer query aborts both older requests and stale project responses are ignored.
 - UI tabs: `За змістом`, `Точні`, and `Усі`, each with a full result count.
+- Starting a search with Enter or `Знайти` scrolls the viewport to the results heading immediately, so the loading/empty/result state is visible.
 - All results stay in client state, but only 100 DOM rows are rendered at a time and additional rows are appended as the user scrolls. This is presentation virtualization, not a result limit.
 - Semantic and exact results are intentionally not deduplicated across tabs.
 - Result clicks seek the local player to approximately 1.5 seconds before the timestamp.
@@ -164,6 +166,7 @@ The search bar contains only the query and the general `Знайти` button. Pr
 - Clicking the selected sidebar video again clears it.
 - The `×` button over the player also clears the selection.
 - Clicking a search result selects/seeks the referenced video and leaves that exact or semantic result visibly highlighted. The highlight survives asynchronous result updates, incremental rendering, and tab switches. Clicking the same result again removes only its highlight without stopping playback; choosing another result transfers the highlight, while choosing a sidebar video or clearing the player removes it.
+- Clicking a search result also scrolls the viewport to the player. Packaged builds render media through a native Qt Multimedia overlay aligned to the HTML player slot, because the stock QtWebEngine build does not decode common proprietary MP4/H.264 media. Source/browser launches keep the HTML5 player fallback and call `play()` from the original user gesture.
 - A persistent caption strip directly below the player shows the selected video's full name and, when different, its project-relative path. It updates for both sidebar selection and search-result navigation, so the active source remains identifiable even when its sidebar row is far outside the scroll position.
 
 ### Project actions
@@ -279,7 +282,7 @@ Run after changes:
 ```bash
 ast-grep scan .
 ast-grep test
-.venv/bin/python -m py_compile app_info.py hardware_check.py process_utils.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/smoke_packaged.py scripts/validate_release_notes.py scripts/versioning.py
+.venv/bin/python -m py_compile app_info.py hardware_check.py process_utils.py server.py transcribe_video.py prepare_semantic.py prepare_models.py model_manager.py release_notes.py update_manifest.py updater.py native_update.py rothbald.py scripts/prepare_build.py scripts/generate_release_manifest.py scripts/generate_updater_key.py scripts/smoke_packaged.py scripts/validate_release_notes.py scripts/versioning.py
 node --check static/app.js
 node --check static/update_flow.js
 node --test tests/test_update_flow.cjs
@@ -302,7 +305,7 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 ## Known limitations
 
 - Timestamps are file-relative, not embedded source timecode or Premiere sequence timecode.
-- Embedded WebView playback depends on its codec/container support; transcription can support formats the player cannot preview.
+- Qt Multimedia playback still depends on the platform multimedia backend; a damaged or genuinely unsupported source can remain transcribable through bundled ffmpeg while failing to preview.
 - Speaker diarization is not implemented.
 - Whisper may hallucinate repetitive text in poor audio; semantic indexing filters obvious repetition but cannot repair the transcript.
 - Semantic relevance is threshold-based and may require future tuning or a user-adjustable sensitivity control.
@@ -320,6 +323,12 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 - Draft GitHub Release hosting, embedded build identity, macOS Developer ID signing/notarization, signed application-update manifests, verified in-app downloads, and native installer handoff are implemented. Windows artifacts are intentionally unsigned until a trusted Authenticode certificate exists and may trigger SmartScreen; the updater manifest remains Ed25519-signed independently.
 
 ## Changelog
+
+### 2026-07-30 — player, search navigation, and automatic install 0.6.0.0
+
+- Replaced packaged HTML5 playback with a Qt Multimedia overlay aligned to the existing player slot after confirming the bundled QtWebEngine cannot decode MP4/H.264. Kept a direct-user-gesture HTML player fallback for source/browser launches and extended packaged smoke imports for the new Qt modules.
+- Added viewport navigation from search submission to results and from result selection to the player, enlarged and emphasized the result tabs, and hid platform scrollbars without disabling scrolling.
+- Turned updater acceptance into one continuous download/install/relaunch flow. macOS now performs a guarded staged bundle swap from the verified DMG with rollback, while Windows uses silent Inno Setup and relaunches the application. Active downloads can no longer be collapsed.
 
 ### 2026-07-29 — hotfix 0.5.0.1
 

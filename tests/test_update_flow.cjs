@@ -22,13 +22,15 @@ test('a manually started check respects an explicitly dismissed window', () => {
   assert.equal(decision.render, true);
 });
 
-test('downloading preserves a user-hidden modal while polling continues', () => {
+test('downloading keeps polling but cannot be dismissed mid-install', () => {
   const hidden = flow.decide({ status: status('downloading'), previousStatus: 'downloading', modalOpen: false });
   const visible = flow.decide({ status: status('downloading'), previousStatus: 'downloading', modalOpen: true });
   assert.equal(hidden.open, false);
   assert.equal(visible.open, true);
   assert.equal(hidden.pollDelay, 500);
-  assert.equal(flow.laterLabel('downloading'), 'Згорнути');
+  assert.equal(flow.laterLabel('downloading'), 'Оновлюю…');
+  assert.equal(flow.canDismiss('downloading'), false);
+  assert.equal(flow.canDismiss('downloaded'), true);
 });
 
 test('background completion and failure notify without reopening the modal', () => {

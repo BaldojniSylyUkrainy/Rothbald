@@ -44,6 +44,7 @@ Name: "{autodesktop}\Rothbald"; Filename: "{app}\{#MyAppExeName}"; Tasks: deskto
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Запустити Rothbald"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait skipifnotsilent
 
 [Code]
 type

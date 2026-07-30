@@ -2395,7 +2395,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(
                 "Content-Security-Policy",
                 "default-src 'self'; media-src 'self'; img-src 'self' data:; "
-                "style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'",
+                "style-src 'self' 'unsafe-inline'; script-src 'self' qrc:; connect-src 'self'",
             )
         self.end_headers()
         self.wfile.write(body)

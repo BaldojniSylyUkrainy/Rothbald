@@ -17,6 +17,7 @@ from unittest import mock
 import app_info
 import hardware_check
 import model_manager
+import native_update
 import process_utils
 import rothbald
 import server
@@ -1091,6 +1092,54 @@ class UpdaterTests(unittest.TestCase):
             UpdateManager(root, "0.4.2.0", enabled=False)
             self.assertFalse(stale.exists())
 
+    def test_macos_update_helper_swaps_only_rothbald_and_reopens_it(self) -> None:
+        helper = native_update.macos_update_helper_text()
+        completed = subprocess.run(
+            ["/bin/sh", "-n"],
+            input=helper,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn('if [ "$(basename "$TARGET_APP")" != "Rothbald.app" ]', helper)
+        self.assertIn('/usr/bin/codesign --verify --deep --strict "$STAGED_APP"', helper)
+        self.assertIn('/usr/sbin/spctl --assess --type execute "$STAGED_APP"', helper)
+        self.assertIn('/usr/bin/open -n "$TARGET_APP"', helper)
+        self.assertIn('while kill -0 "$ROTHBALD_PID"', helper)
+        self.assertIn('if [ "$INSTALLED" -eq 0 ] && [ -d "$TARGET_APP" ]', helper)
+
+    def test_macos_update_helper_arguments_are_bound_to_installed_app(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = root / "Rothbald.app"
+            executable = app / "Contents" / "MacOS" / "Rothbald"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"binary")
+            dmg = root / "Rothbald-0.6.0.0-Mac-Apple-Silicon.dmg"
+            dmg.write_bytes(b"verified")
+
+            self.assertEqual(native_update.macos_app_bundle(executable), app.resolve())
+            helper, arguments = native_update.macos_helper_arguments(
+                dmg,
+                app,
+                process_id=4321,
+            )
+
+            self.assertTrue(helper.is_file())
+            self.assertTrue(os.access(helper, os.X_OK))
+            self.assertEqual(arguments[1:4], [str(dmg), str(app.resolve()), "4321"])
+            with self.assertRaisesRegex(ValueError, "Rothbald.app"):
+                native_update.macos_app_bundle(root / "Other.app" / "Contents" / "MacOS" / "Other")
+
+    def test_windows_updater_runs_silently_and_installer_reopens_rothbald(self) -> None:
+        arguments = native_update.windows_installer_arguments()
+        self.assertIn("/VERYSILENT", arguments)
+        self.assertIn("/CLOSEAPPLICATIONS", arguments)
+        self.assertIn("/RESTARTAPPLICATIONS", arguments)
+        installer = (ROOT / "installer/Rothbald.iss").read_text(encoding="utf-8")
+        self.assertIn("Flags: nowait skipifnotsilent", installer)
+
     def test_download_failure_is_visible_and_retryable_without_rechecking_manifest(self) -> None:
         private_key, public_key = updater_key_pair()
         installer_payload = b"retryable signed installer"
@@ -1225,6 +1274,40 @@ class ReleaseContractTests(unittest.TestCase):
             markup.index('<script src="/static/app.js"></script>'),
         )
         self.assertIn('aria-describedby="updateSummary updateError"', markup)
+
+    def test_native_player_bridge_and_search_navigation_are_wired(self) -> None:
+        markup = (ROOT / "static/index.html").read_text(encoding="utf-8")
+        script = (ROOT / "static/app.js").read_text(encoding="utf-8")
+        launcher = (ROOT / "rothbald.py").read_text(encoding="utf-8")
+        spec = (ROOT / "Rothbald.spec").read_text(encoding="utf-8")
+        self.assertLess(
+            markup.index('qrc:///qtwebchannel/qwebchannel.js'),
+            markup.index('<script src="/static/app.js"></script>'),
+        )
+        self.assertIn("state.nativePlayer.select", script)
+        self.assertIn("state.nativePlayer.setPlayerGeometry", script)
+        self.assertIn("player.play().catch", script)
+        self.assertIn("smoothScrollTo(playerCard)", script)
+        self.assertIn("smoothScrollTo($('.results-title'))", script)
+        self.assertIn("class NativePlayerBridge", launcher)
+        self.assertIn('"PySide6.QtMultimediaWidgets"', spec)
+        self.assertIn('"PySide6.QtWebChannel"', spec)
+
+    def test_search_tabs_are_prominent_and_scrollbars_are_visually_hidden(self) -> None:
+        stylesheet = (ROOT / "static/style.css").read_text(encoding="utf-8")
+        self.assertIn("*::-webkit-scrollbar { width: 0; height: 0; }", stylesheet)
+        self.assertIn("scrollbar-width: none", stylesheet)
+        self.assertRegex(stylesheet, r"\.result-tabs button\s*\{[^}]*min-height:\s*44px;")
+        self.assertIn(".result-tabs button.active", stylesheet)
+
+    def test_update_download_cannot_be_collapsed_and_one_click_continues_to_install(self) -> None:
+        script = (ROOT / "static/app.js").read_text(encoding="utf-8")
+        self.assertIn("if (!updateFlow.canDismiss(status?.status)) return;", script)
+        self.assertIn("state.updateInstallRequested = true;", script)
+        self.assertIn("await installDownloadedUpdate();", script)
+        self.assertIn("retry_action: 'install'", script)
+        self.assertIn("$('#closeUpdateModal').classList.toggle('hidden', downloading)", script)
+        self.assertNotIn("Відкрити DMG", script)
 
     def test_project_creation_and_search_copy_are_unambiguous(self) -> None:
         markup = (ROOT / "static/index.html").read_text(encoding="utf-8")

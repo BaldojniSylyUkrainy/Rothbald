@@ -43,7 +43,7 @@ Source setup встановлює повний platform lock: `requirements-maco
 `whisper-cli.exe` та точний probe індексів Vulkan GPU. Потім виконай
 `python scripts/prepare_build.py` і `pyinstaller --noconfirm Rothbald.spec`.
 Для macOS build environment має містити `MACOSX_DEPLOYMENT_TARGET=14.0`. Збірка
-містить Python runtime, PySide6/QtWebEngine, `ffmpeg`, `ffprobe` та весь код бекенду.
+містить Python runtime, PySide6/QtWebEngine/Qt Multimedia, `ffmpeg`, `ffprobe` та весь код бекенду.
 
 `sgconfig.yml` підключає правила з `rules/`, а їхні fixtures і snapshots лежать
 у `rule-tests/`. Структурний review завжди починай з `ast-grep scan .`, після

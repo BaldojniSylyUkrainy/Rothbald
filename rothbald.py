@@ -12,6 +12,7 @@ from pathlib import Path
 
 import server
 import transcribe_video
+from native_update import macos_app_bundle, macos_helper_arguments, windows_installer_arguments
 
 
 def application_root() -> Path:
@@ -33,6 +34,10 @@ def duplicate_instance_should_focus(platform_name: str) -> bool:
 
 def runtime_smoke() -> None:
     """Fail fast when a packaged build lost a runtime dependency."""
+    from PySide6.QtMultimedia import QMediaPlayer  # noqa: F401
+    from PySide6.QtMultimediaWidgets import QVideoWidget  # noqa: F401
+    from PySide6.QtWebChannel import QWebChannel  # noqa: F401
+
     transcribe_video.verify_runtime_dependencies()
     for name in ("ffmpeg", "ffprobe"):
         executable = server.bundled_tool(name)
@@ -97,12 +102,27 @@ def main() -> None:
         sys.argv = [sys.argv[0], *sys.argv[2:]]
         transcribe_video.main()
         return
-    from PySide6.QtCore import QObject, QProcess, QTimer, QUrl, Signal, Slot
+    from PySide6.QtCore import QObject, QProcess, Qt, QTimer, QUrl, Signal, Slot
     from PySide6.QtGui import QDesktopServices, QIcon
     from PySide6.QtNetwork import QLocalServer, QLocalSocket
+    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+    from PySide6.QtMultimediaWidgets import QVideoWidget
+    from PySide6.QtWebChannel import QWebChannel
     from PySide6.QtWebEngineCore import QWebEnginePage
     from PySide6.QtWebEngineWidgets import QWebEngineView
-    from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox
+    from PySide6.QtWidgets import (
+        QApplication,
+        QFileDialog,
+        QHBoxLayout,
+        QLabel,
+        QMainWindow,
+        QMessageBox,
+        QPushButton,
+        QSlider,
+        QStyle,
+        QVBoxLayout,
+        QWidget,
+    )
 
     qt_app = QApplication(sys.argv)
     qt_app.setApplicationName("Rothbald")
@@ -191,20 +211,229 @@ def main() -> None:
         def _open(self, token: str, raw_path: str) -> None:
             path = Path(raw_path)
             if sys.platform == "win32":
-                started = QProcess.startDetached(str(path), [], str(path.parent))
+                started = QProcess.startDetached(
+                    str(path),
+                    windows_installer_arguments(),
+                    str(path.parent),
+                )
                 launched = bool(started[0] if isinstance(started, tuple) else started)
+                if launched:
+                    qt_app.setProperty("rothbaldInstallerLaunched", True)
+                    QTimer.singleShot(750, qt_app.quit)
+            elif sys.platform == "darwin":
+                try:
+                    target_app = macos_app_bundle()
+                    _, arguments = macos_helper_arguments(
+                        path,
+                        target_app,
+                        process_id=os.getpid(),
+                    )
+                    started = QProcess.startDetached("/bin/sh", arguments, str(path.parent))
+                    launched = bool(started[0] if isinstance(started, tuple) else started)
+                except (OSError, ValueError):
+                    launched = False
                 if launched:
                     qt_app.setProperty("rothbaldInstallerLaunched", True)
                     QTimer.singleShot(750, qt_app.quit)
             else:
                 launched = QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
-                if launched:
-                    qt_app.setProperty("rothbaldInstallerLaunched", True)
-                    QTimer.singleShot(750, qt_app.quit)
             with self._lock:
                 event, result = self._pending.pop(token)
             result["launched"] = launched
             event.set()
+
+    class NativePlayer(QWidget):
+        clearRequested = Signal()
+        errorRaised = Signal(str)
+
+        def __init__(self, parent: QWidget):
+            super().__init__(parent)
+            self.setObjectName("nativePlayer")
+            self.setStyleSheet(
+                """
+                QWidget#nativePlayer { background: #030303; border: 1px solid #202024; }
+                QWidget#nativePlayer QWidget { background: #080809; color: #f1f1f2; }
+                QWidget#nativePlayer QPushButton {
+                    min-width: 30px; border: 0; padding: 5px 8px;
+                    background: transparent; color: #f1f1f2; font-weight: 700;
+                }
+                QWidget#nativePlayer QPushButton:hover { background: #202024; }
+                QWidget#nativePlayer QSlider::groove:horizontal { height: 4px; background: #36363b; }
+                QWidget#nativePlayer QSlider::handle:horizontal {
+                    width: 12px; margin: -4px 0; border-radius: 6px; background: #aaa1b5;
+                }
+                QWidget#nativePlayer QSlider::sub-page:horizontal { background: #aaa1b5; }
+                """
+            )
+            self.pending_position_ms: int | None = None
+            self.dragging = False
+
+            self.video = QVideoWidget(self)
+            self.audio = QAudioOutput(self)
+            self.audio.setVolume(0.8)
+            self.media = QMediaPlayer(self)
+            self.media.setAudioOutput(self.audio)
+            self.media.setVideoOutput(self.video)
+
+            self.play_button = QPushButton(self)
+            self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            self.play_button.setAccessibleName("Відтворити або призупинити")
+            self.position = QSlider(Qt.Horizontal, self)
+            self.position.setRange(0, 0)
+            self.time_label = QLabel("0:00 / 0:00", self)
+            self.fullscreen_button = QPushButton("⛶", self)
+            self.fullscreen_button.setAccessibleName("Повноекранний режим")
+
+            controls = QHBoxLayout()
+            controls.setContentsMargins(6, 2, 6, 2)
+            controls.setSpacing(8)
+            controls.addWidget(self.play_button)
+            controls.addWidget(self.position, 1)
+            controls.addWidget(self.time_label)
+            controls.addWidget(self.fullscreen_button)
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+            layout.addWidget(self.video, 1)
+            layout.addLayout(controls)
+
+            self.close_button = QPushButton("×", self)
+            self.close_button.setFixedSize(34, 34)
+            self.close_button.setAccessibleName("Зняти вибір відео")
+            self.close_button.setStyleSheet(
+                "border-radius: 17px; background: rgba(8,8,7,210); font-size: 20px;"
+            )
+            self.close_button.clicked.connect(self.clearRequested.emit)
+            self.play_button.clicked.connect(self.toggle_playback)
+            self.fullscreen_button.clicked.connect(
+                lambda: self.video.setFullScreen(not self.video.isFullScreen())
+            )
+            self.position.sliderPressed.connect(lambda: setattr(self, "dragging", True))
+            self.position.sliderReleased.connect(self.seek_from_slider)
+            self.media.positionChanged.connect(self.update_position)
+            self.media.durationChanged.connect(self.update_duration)
+            self.media.playbackStateChanged.connect(self.update_play_icon)
+            self.media.mediaStatusChanged.connect(self.apply_pending_seek)
+            self.media.errorOccurred.connect(
+                lambda _error, message: self.errorRaised.emit(
+                    message or "Не вдалося відтворити це відео"
+                )
+            )
+            self.hide()
+
+        @staticmethod
+        def format_time(milliseconds: int) -> str:
+            seconds = max(0, milliseconds // 1000)
+            hours, rest = divmod(seconds, 3600)
+            minutes, seconds = divmod(rest, 60)
+            return (
+                f"{hours}:{minutes:02d}:{seconds:02d}"
+                if hours
+                else f"{minutes}:{seconds:02d}"
+            )
+
+        def resizeEvent(self, event) -> None:
+            super().resizeEvent(event)
+            self.close_button.move(max(0, self.width() - 44), 10)
+            self.close_button.raise_()
+
+        def set_media(self, path: Path, seconds: float | None) -> None:
+            seek_seconds = max(0.0, float(seconds or 0) - (1.5 if seconds is not None else 0))
+            requested_ms = round(seek_seconds * 1000)
+            source = QUrl.fromLocalFile(str(path))
+            if self.media.source() == source:
+                self.media.setPosition(requested_ms)
+                self.media.play()
+                return
+            self.pending_position_ms = requested_ms
+            self.media.setSource(source)
+            self.media.play()
+
+        def clear(self) -> None:
+            self.pending_position_ms = None
+            self.media.stop()
+            self.media.setSource(QUrl())
+            self.hide()
+
+        def apply_pending_seek(self, status) -> None:
+            if status not in {
+                QMediaPlayer.LoadedMedia,
+                QMediaPlayer.BufferedMedia,
+                QMediaPlayer.BufferingMedia,
+            }:
+                return
+            if self.pending_position_ms is not None:
+                self.media.setPosition(self.pending_position_ms)
+                self.pending_position_ms = None
+            self.media.play()
+
+        def toggle_playback(self) -> None:
+            if self.media.playbackState() == QMediaPlayer.PlayingState:
+                self.media.pause()
+            else:
+                self.media.play()
+
+        def seek_from_slider(self) -> None:
+            self.dragging = False
+            self.media.setPosition(self.position.value())
+
+        def update_position(self, value: int) -> None:
+            if not self.dragging:
+                self.position.setValue(value)
+            self.time_label.setText(
+                f"{self.format_time(value)} / {self.format_time(self.media.duration())}"
+            )
+
+        def update_duration(self, value: int) -> None:
+            self.position.setRange(0, max(0, value))
+            self.update_position(self.media.position())
+
+        def update_play_icon(self, state) -> None:
+            icon = (
+                QStyle.SP_MediaPause
+                if state == QMediaPlayer.PlayingState
+                else QStyle.SP_MediaPlay
+            )
+            self.play_button.setIcon(self.style().standardIcon(icon))
+
+    class NativePlayerBridge(QObject):
+        errorOccurred = Signal(str)
+
+        def __init__(self, player_widget: NativePlayer):
+            super().__init__()
+            self.player_widget = player_widget
+
+        @Slot(str, float)
+        def select(self, video_id: str, seconds: float) -> None:
+            video = server.get_video(video_id)
+            path = Path(video["source_path"]) if video else None
+            if not path or not path.is_file():
+                self.errorOccurred.emit(
+                    "Текст збережений, але самого відеофайлу немає. Скористайся Locate."
+                )
+                return
+            at = None if seconds < 0 else seconds
+            self.player_widget.set_media(path, at)
+
+        @Slot()
+        def clear(self) -> None:
+            self.player_widget.clear()
+
+        @Slot(int, int, int, int, bool)
+        def setPlayerGeometry(
+            self,
+            x: int,
+            y: int,
+            width: int,
+            height: int,
+            visible: bool,
+        ) -> None:
+            if not visible or width < 80 or height < 60:
+                self.player_widget.hide()
+                return
+            self.player_widget.setGeometry(x, y, width, height)
+            self.player_widget.show()
+            self.player_widget.raise_()
 
     class RothbaldPage(QWebEnginePage):
         def acceptNavigationRequest(self, target: QUrl, navigation_type, is_main_frame: bool) -> bool:
@@ -227,8 +456,21 @@ def main() -> None:
                 self.setWindowIcon(QIcon(str(icon_path)))
             view = QWebEngineView(self)
             view.setPage(RothbaldPage(view))
+            native_player = NativePlayer(view)
+            player_bridge = NativePlayerBridge(native_player)
+            channel = QWebChannel(view.page())
+            channel.registerObject("nativePlayer", player_bridge)
+            view.page().setWebChannel(channel)
+            native_player.clearRequested.connect(
+                lambda: view.page().runJavaScript("clearVideoSelection()")
+            )
+            native_player.errorRaised.connect(player_bridge.errorOccurred.emit)
             view.setUrl(QUrl(url))
             self.setCentralWidget(view)
+            self.view = view
+            self.native_player = native_player
+            self.player_bridge = player_bridge
+            self.web_channel = channel
 
         def closeEvent(self, event) -> None:
             # Installing a verified update intentionally hands control to the
