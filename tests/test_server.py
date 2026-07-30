@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -87,6 +88,31 @@ class FakeResponse:
         chunk = self.payload[self.offset:self.offset + size]
         self.offset += len(chunk)
         return chunk
+
+
+class TranscriptionRuntimeTests(unittest.TestCase):
+    def test_windows_runtime_smoke_initializes_faster_whisper_vad(self) -> None:
+        faster_whisper = types.ModuleType("faster_whisper")
+        faster_whisper.WhisperModel = object
+        with mock.patch.object(sys, "platform", "win32"), \
+             mock.patch.dict(
+                 sys.modules,
+                 {
+                     "ctranslate2": types.ModuleType("ctranslate2"),
+                     "requests": types.ModuleType("requests"),
+                     "faster_whisper": faster_whisper,
+                 },
+             ), \
+             mock.patch.object(transcribe_video, "verify_faster_whisper_vad_runtime") as verify_vad:
+            transcribe_video.verify_runtime_dependencies()
+        verify_vad.assert_called_once_with()
+
+    def test_windows_spec_collects_faster_whisper_vad_models(self) -> None:
+        spec = (ROOT / "Rothbald.spec").read_text(encoding="utf-8")
+        self.assertIn(
+            'collect_data_files("faster_whisper", includes=["assets/*.onnx"])',
+            spec,
+        )
 
 
 class ApplicationInfoTests(unittest.TestCase):

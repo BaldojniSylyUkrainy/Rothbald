@@ -31,6 +31,10 @@ if sys.platform == "darwin":
     # only the assets and native libraries here without executing MLX.
     datas += collect_data_files("mlx") + collect_data_files("mlx_whisper")
     binaries += collect_dynamic_libs("mlx")
+elif sys.platform == "win32":
+    # faster-whisper loads Silero VAD ONNX models at transcription time. They
+    # are package data, so PyInstaller's module analysis does not collect them.
+    datas += collect_data_files("faster_whisper", includes=["assets/*.onnx"])
 hiddenimports += [
     "mlx._reprlib_fix",
     "mlx.extension",

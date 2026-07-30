@@ -5,7 +5,7 @@ on:
     inputs:
       tag:
         description: "Existing green-main release tag, for example vX.Y.Z.H"
-        default: "v0.6.0.0"
+        default: "v0.6.0.1"
         required: true
         type: string
 

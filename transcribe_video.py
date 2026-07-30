@@ -12,12 +12,33 @@ from model_manager import WINDOWS_VULKAN_WHISPER_PATTERNS
 from process_utils import quiet_process_options
 
 
+FASTER_WHISPER_VAD_ASSETS = (
+    "silero_encoder_v5.onnx",
+    "silero_decoder_v5.onnx",
+)
+
+
+def verify_faster_whisper_vad_runtime() -> None:
+    """Load the packaged Silero VAD sessions before accepting a Windows build."""
+    from faster_whisper.utils import get_assets_path
+    from faster_whisper.vad import get_vad_model
+
+    assets_path = Path(get_assets_path())
+    missing = [name for name in FASTER_WHISPER_VAD_ASSETS if not (assets_path / name).is_file()]
+    if missing:
+        raise RuntimeError(
+            "У збірці Rothbald відсутні файли голосового фільтра: " + ", ".join(missing)
+        )
+    get_vad_model()
+
+
 def verify_runtime_dependencies() -> None:
-    """Import the platform backend without loading a model."""
+    """Import and initialize the platform backend used by packaged smoke tests."""
     if sys.platform == "win32":
         import ctranslate2  # noqa: F401
         import requests  # noqa: F401
         from faster_whisper import WhisperModel  # noqa: F401
+        verify_faster_whisper_vad_runtime()
 
 
 def resolve_faster_whisper_device(preference: str, cuda_count: int) -> tuple[str, int, str]:

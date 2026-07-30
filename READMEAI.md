@@ -324,6 +324,11 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 
 ## Changelog
 
+### 2026-07-30 — Windows VAD packaging hotfix 0.6.0.1
+
+- Included faster-whisper's two Silero VAD ONNX assets in Windows PyInstaller output. Missing package data caused the installed transcription worker to fail with ONNX Runtime `NO_SUCHFILE` only when the lazy segments iterator first enabled `vad_filter`.
+- Strengthened `--runtime-smoke`: Windows builds now verify both asset paths and initialize the encoder and decoder ONNX sessions, so an import-only smoke can no longer approve this incomplete package.
+
 ### 2026-07-30 — player, search navigation, and automatic install 0.6.0.0
 
 - Replaced packaged HTML5 playback with a Qt Multimedia overlay aligned to the existing player slot after confirming the bundled QtWebEngine cannot decode MP4/H.264. Kept a direct-user-gesture HTML player fallback for source/browser launches and extended packaged smoke imports for the new Qt modules.
