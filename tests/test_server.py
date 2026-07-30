@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import struct
 import subprocess
@@ -1120,14 +1121,16 @@ class UpdaterTests(unittest.TestCase):
 
     def test_macos_update_helper_swaps_only_rothbald_and_reopens_it(self) -> None:
         helper = native_update.macos_update_helper_text()
-        completed = subprocess.run(
-            ["/bin/sh", "-n"],
-            input=helper,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
+        shell = shutil.which("sh")
+        if shell:
+            completed = subprocess.run(
+                [shell, "-n"],
+                input=helper,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn('if [ "$(basename "$TARGET_APP")" != "Rothbald.app" ]', helper)
         self.assertIn('/usr/bin/codesign --verify --deep --strict "$STAGED_APP"', helper)
         self.assertIn('/usr/sbin/spctl --assess --type execute "$STAGED_APP"', helper)

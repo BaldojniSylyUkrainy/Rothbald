@@ -328,6 +328,7 @@ Do not modify or delete user media during testing. Prefer temporary files and co
 
 - Included faster-whisper's two Silero VAD ONNX assets in Windows PyInstaller output. Missing package data caused the installed transcription worker to fail with ONNX Runtime `NO_SUCHFILE` only when the lazy segments iterator first enabled `vad_filter`.
 - Strengthened `--runtime-smoke`: Windows builds now verify both asset paths and initialize the encoder and decoder ONNX sessions, so an import-only smoke can no longer approve this incomplete package.
+- Kept the macOS updater-helper contract assertions cross-platform while running POSIX shell syntax validation only when a shell executable is available; Windows CI no longer assumes the macOS-only absolute `/bin/sh` path.
 
 ### 2026-07-30 — player, search navigation, and automatic install 0.6.0.0
 
